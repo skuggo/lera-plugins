@@ -266,6 +266,8 @@ function M.reset_connection()
   -- Guild data itself is deliberately preserved across a reconnect, but the
   -- claim that it has ARRIVED this connection is not -- see the field comment.
   state.livestock_seen = false
+  state.herd_connection_epoch = (state.herd_connection_epoch or 0) + 1
+  state.herd_observed = {}
   -- The map planes themselves are left standing (a reconnect redraws them on
   -- the next Guild.Map push, and a blank map in the meantime helps nobody),
   -- but their decoding context is not: see the field comments above.

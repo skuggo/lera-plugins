@@ -171,7 +171,8 @@ end
 
 local function herd_head_row(width, bldg, herd)
   local label = SP_LABEL[bldg] or cc.cap_first(bldg)
-  local cap = herd_cap(bldg)
+  local cap = herd.management and herd.management.cap or herd_cap(bldg)
+    if herd.management_present and not herd.management then cap = nil end
   local hc = cap and string.format("%d/%d", herd.head or 0, cap) or tostring(herd.head or 0)
   return pagelib.trunc(string.format("%s%-10s%s %s%s%s",
     SP_ANSI[bldg] or C.white, label, pagelib.RESET, C.yellow, hc, pagelib.RESET), width)
@@ -184,7 +185,8 @@ end
 -- for its own brown-ish entries (e.g. furs).
 local function herd_stats_row(width, herd)
   local raw = string.format(
-    "%sH:%d%s %sF:%d%s %sY:%d%s %sV:%d%s %sC:%d%s  Gen:%d",
+    herd.management and "%sH:%.2f%s %sF:%.2f%s %sY:%.2f%s %sV:%.2f%s %sC:%.2f%s  Gen:%.2f"
+          or "%sH:%d%s %sF:%d%s %sY:%d%s %sV:%d%s %sC:%d%s  Gen:%d",
     C.green, herd.hard or 0, pagelib.RESET,
     C.magenta, herd.fert or 0, pagelib.RESET,
     C.yellow, herd.yield or 0, pagelib.RESET,
@@ -194,8 +196,10 @@ local function herd_stats_row(width, herd)
   if (herd.hv or 0) > 0 then
     raw = raw .. string.format("  %s+HV:%d%s", C.bright_green, herd.hv, pagelib.RESET)
   end
-  if (herd.age_ticks or 0) > 0 then
-    raw = raw .. string.format("  Age:%d", herd.age_ticks)
+  if herd.age_ticks ~= nil then
+    raw = raw .. string.format(herd.management and "  Age:%.2f" or "  Age:%d", herd.age_ticks)
+  else
+    raw = raw .. "  Age:?"
   end
   raw = raw .. trait_tag(herd.trait)
   return pagelib.trunc(raw, width)
@@ -212,6 +216,13 @@ local function herds_lines(add, width)
     if herd and (herd.head or 0) > 0 then
       add(herd_head_row(width, bldg, herd))
       add(herd_stats_row(width, herd))
+      local mg = herd.management
+      if mg then
+        add(pagelib.trunc(string.format("Penfree:%d  pending:%d  protected:%d  auto-cull:%s",
+          mg.free, mg.pending, mg.protected, mg.auto_slaughter == 1 and "on" or "off"), width))
+      elseif herd.management_present then
+        add(pagelib.trunc("Management:? (invalid metadata; auto-buy paused)", width))
+      end
     end
   end
 end

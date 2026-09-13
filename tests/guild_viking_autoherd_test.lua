@@ -288,13 +288,15 @@ S.lfeed = { grain = 0, water = 0, head = 4 }
 S.wstock_by_good = { grain = { good = "grain", amount = 9999 } }
 S.wstock = { { good = "grain", amount = 9999 } }
 -- Two listings: the same breed as the herd, and a different one. Crossbreed
--- must pick the DIFFERENT breed (idx 1 -> wire id 2).
+-- must pick the DIFFERENT breed (idx 1 -> wire id 2). The fresh lot now
+-- matches herd stats: the old inferior fixture would fail the no-loss gate,
+-- obscuring these tests' generation/sterility/age trigger checks.
 S.lmarket = {
   [1] = {
     { lin = 1, idx = 0, species = "sheep", breed = "nordic", count = 1,
       price = 400, hard = 99, fert = 99, yield = 99, vigor = 99, con = 99 },
     { lin = 1, idx = 1, species = "sheep", breed = "highland", count = 1,
-      price = 400, hard = 30, fert = 40, yield = 50, vigor = 45, con = 35 },
+      price = 400, hard = 40, fert = 55, yield = 70, vigor = 66, con = 50 },
   },
 }
 -- head 4 == the restock floor (keep = 4), so restock cannot fire; con 50
@@ -303,7 +305,7 @@ local function set_herd(gen)
   S.herds = {
     sheepfold = { bldg = "sheepfold", head = 4, quality = 60, gen = gen,
                   sterile = 0, hard = 40, fert = 55, yield = 70, vigor = 66,
-                  con = 50, breed = "nordic", hv = 0, age_ticks = 1 },
+                  con = 50, breed = "nordic", breeds = { "nordic" }, hv = 0, age_ticks = 1 },
   }
 end
 
@@ -500,6 +502,128 @@ act = ah.plan()
 check("quality buy: deliveries in transit fill the cap -> no buy",
       act == nil or act.kind ~= "buy", act and act.cmd)
 S.lpending = {}
+
+-- ---- quality eligibility is independent of trait rank and rounding --------
+do
+  local herd = S.herds.sheepfold
+  local listing = S.lmarket[1][1]
+  listing.trait = "bountiful"
+  listing.yield = 60
+  act = ah.plan()
+  check("inferior trait lot cannot pass raw quality margin", act == nil)
+  listing.yield = 71
+  act = ah.plan()
+  check("trait bonus cannot bridge raw margin", act == nil)
+  listing.yield = 72 -- raw +8, but floor((70*4 + 72)/5) remains 70
+  act, why = ah.plan()
+  check("raw improvement lost to integer averaging is not bought", act == nil)
+  check("no beneficial option reason is actionable",
+        why and why:find("rounded stat gain", 1, true) ~= nil, why)
+  listing.hard, listing.yield = 41, 71 -- raw +5 exactly, rounded gain still zero
+    act = ah.plan()
+    check("exact raw margin still needs a rounded gain", act == nil)
+    listing.hard, listing.yield = 36, 72 -- raw +4 below margin, regardless of trait
+    act = ah.plan()
+    check("weighted tradeoff below margin is rejected", act == nil)
+    listing.hard, listing.yield = 35, 73 -- raw +7, but hard falls and yield stays flat
+    act = ah.plan()
+    check("rounding each stat rejects a net herd loss despite raw gain", act == nil)
+    listing.hard, listing.yield = 40, 72
+    listing.count = 4 -- floor((70*4 + 72*4)/8) == 71
+  act = ah.plan()
+  check("larger lot with visible rounded improvement is bought", act and act.kind == "buy")
+  listing.count = 20
+  herd.head = 13 -- only one space: don't predict averaging all 20 animals
+  act = ah.plan()
+  check("quality prediction uses available pen space", act == nil)
+  herd.head = 4
+  listing.count, listing.yield = 1, 80
+  local better = { lin = 1, idx = 1, species = "sheep", breed = "highland",
+    count = 1, price = 400, hard = 40, fert = 55, yield = 90, vigor = 66, con = 50 }
+  S.lmarket[1][2] = better
+  act = ah.plan()
+  check("traitless herd prefers eligible trait lot", act and act.idx == 0)
+  herd.trait = "hardy"
+  act = ah.plan()
+  check("existing trait cannot be replaced so better raw lot wins", act and act.idx == 1)
+  herd.trait = "bountiful"
+  act = ah.plan()
+  check("matching existing trait also gets no ranking bonus", act and act.idx == 1)
+  herd.trait = nil
+  S.lpending = { { bldg = "sheepfold", breed = "nordic", count = 1 } }
+  act, why = ah.plan()
+  check("quality waits for a small pending lot even with spare room", act == nil)
+  check("pending wait reason", why and why:find("deliveries", 1, true) ~= nil, why)
+  S.lpending = {}
+  S.herds = {}
+  listing.yield = 30
+  act = ah.plan()
+  check("empty restock retains trait preference", act and act.idx == 0)
+  S.lpending = { { bldg = "sheepfold", breed = "nordic", count = 1 } }
+  act = ah.plan()
+  check("restock waits even when pending lot is below breeding floor", act == nil)
+  S.lpending = {}
+end
+
+-- ---- crossbreed requires complete first-introduction history ---------------
+do
+  S.autoherd = nil
+  local settings = ah.settings()
+  settings.restock, settings.buy_quality, settings.age_refresh = false, false, 0
+  set_herd(8)
+  S.lmarket = { [1] = {
+    { lin = 1, idx = 0, species = "sheep", breed = "highland", count = 1,
+      price = 400, hard = 40, fert = 55, yield = 90, vigor = 66, con = 50 },
+    { lin = 1, idx = 1, species = "sheep", breed = "island", count = 1,
+      price = 400, hard = 40, fert = 55, yield = 80, vigor = 66, con = 50 },
+  } }
+  local herd = S.herds.sheepfold
+  herd.breeds = { "nordic", "highland" }
+  act = ah.plan()
+  check("crossbreed excludes previously introduced non-primary breed", act and act.idx == 1)
+  local fresh = S.lmarket[1][2]
+  fresh.trait, fresh.yield = "bountiful", 60
+  act, why = ah.plan()
+  check("verified new blood with a trait cannot justify predicted stat loss", act == nil)
+  check("crossbreed no-option reason explains no-loss gate",
+        why and why:find("without rounded stat loss", 1, true) ~= nil, why)
+  fresh.hard, fresh.yield = 35, 73 -- raw +7, rounded hard -1 and yield unchanged
+  act = ah.plan()
+  check("crossbreed rejects raw improvement that rounds to a herd loss", act == nil)
+  fresh.hard, fresh.yield = 40, 70
+  act = ah.plan()
+  check("verified first cross permits identical stats with zero raw gain",
+        act and act.idx == 1 and act.why:find("crossbreed", 1, true) ~= nil)
+  fresh.yield = 72 -- raw +8, rounded score unchanged for this one-head lot
+  act = ah.plan()
+  check("verified first cross permits unchanged rounded score", act and act.idx == 1)
+  fresh.trait, fresh.yield = nil, 80
+  herd.breeds = { "nordic", "highland", "island" }
+  act = ah.plan()
+  check("all breeds already known means no hybrid purchase", act == nil)
+  herd.breeds = nil
+  for _, hv in ipairs({ 0, 3 }) do
+    herd.hv = hv
+    act = ah.plan()
+    check("unknown breed history cannot prove novelty at hv=" .. hv, act == nil)
+    settings.buy_quality = true
+    act = ah.plan()
+    check("unknown history falls back to quality at hv=" .. hv,
+          act and act.why:find("quality buy", 1, true) ~= nil)
+    settings.buy_quality = false
+  end
+  herd.breeds = { "nordic" }
+  S.lpending = { { bldg = "sheepfold", breed = "highland", count = 1 } }
+  act = ah.plan()
+  check("small pending injection blocks repeated bloodline spend", act == nil)
+  S.lpending = {}
+  herd.head = 14
+  act, why = ah.plan()
+  check("full pens explicitly report no room", act == nil and why:find("pens full", 1, true) ~= nil, why)
+  check("planning does not change purchase toggles or reserve",
+        settings.restock == false and settings.buy_quality == false
+          and settings.crossbreed == true and settings.reserve == 2000)
+end
 
 -- ---- three narrower guards -------------------------------------------------
 -- All three added beyond the brief, each because deleting the line it covers
@@ -794,6 +918,654 @@ check("a changed warn prints again, once",
       count_notes("feed low") == 1, count_notes("feed low"))
 os.time = warn_real_time
 page_opts.set("auto_herd", false)
+
+-- Exercise the compact wire through the real writer, not hand-made planner state.
+local writer = require("handlers.livestock")._gmcp
+local fingerprint = string.rep("a", 32)
+local function compact_fixture(head, cap, pending, gen, stat)
+  S.autoherd = nil
+  local cfg = ah.settings()
+  cfg.feed_guard, cfg.restock, cfg.crossbreed = false, false, false
+  cfg.goal, cfg.quality_margin = "balanced", 5
+  S.buildings, S.lpending, S.daler = { stable = 1 }, {}, 2250
+  writer.HERDS({ { bldg = "stable", head = head, breed = "nordic", breeds = "nordic",
+    management = string.format("%d;%d;%d;%d;0;0;4050;%d;%s", cap, pending,
+      cap - head - pending, head, gen, stat or "5000,5000,5000,5000,5000,5000") } })
+  writer.LMARKET({ lmarket_1 = { { lin = 1, idx = 2, species = "horse", breed = "nordic",
+    count = 8, available = 7, unit_price = 100, price = 800, token = fingerprint,
+    hard = 51, fert = 51, yield = 51, vigor = 51, con = 51 } } }, true)
+end
+compact_fixture(98, 110, 0, 800)
+act = ah.plan()
+check("fractional quality gain buys exact reserve-limited protected count", act
+  and act.cmd == "vlivestock buy lodbrok 3 2 " .. fingerprint, act and act.cmd)
+check("exact partial cost respects reserve", act and act.why:find("200d", 1, true))
+S.daler = 2100
+act = ah.plan()
+check("one hundredth gains accumulate despite whole-point truncation", act
+  and act.cmd == "vlivestock buy lodbrok 3 1 " .. fingerprint)
+S.daler = 2099
+act = ah.plan()
+check("reserve cannot afford even one protected horse", not act or act.kind ~= "buy")
+compact_fixture(98, 99, 0, 800)
+S.daler = 9999
+act = ah.plan()
+check("authoritative penfree limits count not tier cap", act
+  and act.cmd == "vlivestock buy lodbrok 3 1 " .. fingerprint)
+compact_fixture(98, 110, 1, 800)
+act = ah.plan()
+check("management pending pauses even without LPENDING", not act or act.kind ~= "buy")
+compact_fixture(98, 98, 0, 800)
+act = ah.plan()
+check("full protected horse pen never buys or slaughters", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+S.lmarket[1][1].token = nil
+act = ah.plan()
+check("missing fingerprint never downgrades new offer", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+S.daler = 3000 -- the legacy whole lot is affordable, so only the schema guard blocks it
+writer.LMARKET({ lmarket_1 = { { lin = 1, idx = 2, species = "horse", breed = "nordic",
+  count = 8, price = 800, hard = 51, fert = 51, yield = 51, vigor = 51, con = 51 } } }, true)
+check("budget-omitted offer has no optional metadata", not S.lmarket[1][1].metadata_present)
+act = ah.plan()
+check("management forbids legacy fallback when all offer metadata is omitted",
+  not act or act.kind ~= "buy", act and act.cmd)
+compact_fixture(0, 10, 0, 0)
+ah.settings().restock, ah.settings().buy_quality = true, false
+writer.HERDS({ { bldg = "stable", head = 0, breed = "", breeds = "",
+  management = "10;0;10;0;0;0;0;0;0,0,0,0,0,0" } })
+check("compact empty pen retains zero head and management", S.herds.stable.head == 0
+  and S.herds.stable.management and S.herds.stable.management.free == 10)
+check("compact empty breed string is known empty history",
+  type(S.herds.stable.breeds) == "table" and #S.herds.stable.breeds == 0)
+act = ah.plan()
+check("compact empty pen stocks with reserve-limited count and token", act
+  and act.kind == "buy" and act.cmd == "vlivestock buy lodbrok 3 2 " .. fingerprint,
+  act and act.cmd)
+check("compact empty pen stock uses exact partial cost", act and act.why:find("stock horse", 1, true)
+  and act.why:find("200d", 1, true))
+compact_fixture(98, 110, 0, 800)
+S.herds.stable.management = nil
+act = ah.plan()
+check("malformed management blocks automation", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+S.herds = {}
+ah.settings().restock = true
+act = ah.plan()
+check("omitted herd management cannot authorize protected stock", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+ah.settings().crossbreed, ah.settings().buy_quality = true, false
+for _, stat in ipairs({ "hard", "fert", "yield", "vigor", "con" }) do S.lmarket[1][1][stat] = 50 end
+act = ah.plan()
+check("known breed qualifies for proportional generation relief", act and act.kind == "buy")
+S.lmarket[1][1].hard = 49
+act = ah.plan()
+check("generation relief cannot excuse stat degradation", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+S.lmarket[1][1].quote = { accepted = 7, before_gen_x100 = 800,
+  before_stats = S.herds.stable.management.stats, after_stats = { hard = 10000 } }
+for _, stat in ipairs({ "hard", "fert", "yield", "vigor", "con" }) do S.lmarket[1][1][stat] = 50 end
+act = ah.plan()
+check("advisory quote cannot invent reserve-limited quality gains", not act or act.kind ~= "buy")
+compact_fixture(1000, 1010, 0, 800)
+act = ah.plan()
+check("sub-hundredth truncated gain does not justify quality buy", not act or act.kind ~= "buy")
+compact_fixture(98, 110, 0, 800)
+ah.settings().quality_margin = 6
+act = ah.plan()
+check("fractional gain still requires raw margin", not act or act.kind ~= "buy")
+
+-- Replacement integration uses the real planner/executor, not a proposed-action stub.
+local replacement = require("herd_replace")
+local persist = require("persist")
+local original_save = persist.save
+local replacement_now = real_time() + 10000
+os.time = function() return replacement_now end
+local saves, fail_save = 0, false
+persist.save = function()
+  saves = saves + 1
+  if fail_save then error("test disk failure") end
+end
+local function replacement_fixture()
+  package.loaded.autoherd = nil
+  ah = require("autoherd")
+  S.autoherd = nil
+  local settings = ah.settings()
+  settings.reserve, settings.feed_guard = 200, false
+  S.buildings = { sheepfold = 1 }
+  S.daler, S.livestock_seen, S.at_hold_until = 1000, true, nil
+  S.herd_connection_epoch = 1
+  S.herd_observed = {}
+  for _, key in ipairs({ "herds", "pending", "bqueue", "daler", "prices" }) do
+    S.herd_observed[key] = { at = replacement_now, seq = 1 }
+  end
+  S.herds = { sheepfold = { head = 20, _received_at = replacement_now,
+    management = { cap = 20, pending = 0, free = 0, protected = 4, cullable = 16,
+      auto_slaughter = 0, stats = { hard = 5000, fert = 5000, yield = 5000, vigor = 5000, con = 5000 } } } }
+  S.lmarket = { [1] = { { lin = 1, idx = 0, species = "sheep", breed = "nordic",
+    count = 5, available = 5, unit_price = 10, price = 50, token = string.rep("a", 32),
+    hard = 90, fert = 90, yield = 90, vigor = 90, con = 90, _received_at = replacement_now } } }
+  S.lpending, S.bqueue, S.bqueue_used, S.bqueue_max = {}, {}, 0, 4
+  S.trade_goods = { [1] = { mutton = { sell = 100, demand = 100, _received_at = replacement_now },
+    wool = { sell = 100, demand = 100, _received_at = replacement_now } } }
+  page_opts.set("auto_herd", true)
+  mud_connected, fail_save, sent, saves = true, false, {}, 0
+  mud.send = function(cmd)
+    check("replacement persisted before send", saves > 0 and replacement.busy(settings.replace)
+      and settings.replace.daily.spent == 20)
+    sent[#sent + 1] = cmd
+    saves = 0
+  end
+  ah.config("model sheepfold output 1")
+  ah.config("replace overhead 0")
+  return settings.replace
+end
+do
+  local original_trade, original_gmcp = package.loaded["handlers.trade"], gmcp
+  local status, requests = {}, 0
+  package.loaded["handlers.trade"] = { _tgoods_status = function() return status end }
+  gmcp = { enabled = function() return true end, send = function() requests = requests + 1 end }
+  local function diagnostic_case(name, receipt, stream, expected)
+    replacement_fixture()
+    S.herd_observed.prices = receipt and { at = receipt, seq = 1 } or nil
+    status = stream
+    status.connection_epoch = S.herd_connection_epoch
+    local before_saves, before_notes = saves, #notes
+    for _, command in ipairs({ "forecast", "replace preview" }) do ah.config(command) end
+    local lines, matched = 0, 0
+    for i = before_notes + 1, #notes do
+      if notes[i]:find("price stream:", 1, true) then
+        lines = lines + 1
+        if notes[i] == "  price stream: " .. expected then matched = matched + 1 end
+        check(name .. " bounded one line", #notes[i] < 240 and not notes[i]:find("\n", 1, true))
+      end
+    end
+    check(name, lines == 2 and matched == 2)
+    ah.replacement_preview()
+    check(name .. " read only", saves == before_saves and #sent == 0 and requests == 0
+      and status == stream and (not receipt or S.herd_observed.prices.at == receipt))
+  end
+  diagnostic_case("first grid progress", nil, { received = 3, expected = 12, complete = false, ever_complete = false },
+    "3/12 lineages; waiting for first complete grid")
+  diagnostic_case("unknown grid waits for cycle", nil, { received = 0, complete = false },
+    "0/? lineages; waiting for first complete grid; waiting for server's next cycle (300s)")
+  diagnostic_case("previous complete while receiving", replacement_now - 601,
+    { received = 4, expected = 12, complete = false, ever_complete = true, last_complete_at = replacement_now - 601 },
+    "last complete grid 601s ago; receiving 4/12")
+  diagnostic_case("completed stale grid age", replacement_now - 900,
+    { received = 12, expected = 12, complete = true, last_complete_at = replacement_now - 900 },
+    "last complete grid 900s ago")
+  diagnostic_case("reload retains observed proof", replacement_now - 700,
+    { received = 2, expected = 12, complete = false, ever_complete = false },
+    "last complete grid 700s ago; receiving 2/12")
+  diagnostic_case("legacy observed proof", replacement_now - 800,
+    { received = 0, complete = false, ever_complete = false },
+    "last complete grid 800s ago; receiving 0/?; waiting for server's next cycle (300s)")
+  package.loaded["handlers.trade"] = {}
+  replacement_fixture()
+  S.herd_observed.prices = nil
+  check("trade stub without accessor does not crash", pcall(ah.config, "forecast"))
+  package.loaded["handlers.trade"], gmcp = original_trade, original_gmcp
+end
+
+do
+  local requests, enabled, mode = 0, true, "ok"
+  gmcp = {
+    enabled = function() return enabled end,
+    send = function(pkg, data)
+      requests = requests + 1
+      check("refresh sends only Guild Add", pkg == "Core.Supports.Add" and #data == 1 and data[1] == "Guild 1")
+      if mode == "throw" then error("sender failed") end
+      return mode == "ok"
+    end,
+  }
+  replacement_fixture()
+  S.autoherd = nil
+  local before_saves = saves
+  local sender = gmcp.send
+  gmcp.send = nil; ah.config("refresh")
+  check("refresh missing sender", requests == 0)
+  gmcp.send = sender
+  enabled = false; ah.config("refresh")
+  check("refresh GMCP disabled", requests == 0)
+  enabled, mud_connected = true, false; ah.config("refresh")
+  check("refresh disconnected", requests == 0)
+  mud_connected, S.livestock_seen = true, false
+  S.herds, S.lmarket, S.lpending, S.herd_observed = {}, {}, {}, {}
+  check("automatic refresh requires current Viking evidence", ah.refresh(true) == false and requests == 0)
+  local master = page_opts.get("auto_herd")
+  ah.config("refresh")
+  check("manual refresh bootstraps missing livestock after reload", requests == 1 and not S.livestock_seen
+    and next(S.herds) == nil and next(S.lmarket) == nil and next(S.herd_observed) == nil)
+  ah.config("refresh")
+  check("refresh request is debounced and read-only", requests == 1 and S.autoherd == nil
+    and saves == before_saves and #sent == 0 and page_opts.get("auto_herd") == master
+    and next(S.herd_observed) == nil)
+  replacement_now = replacement_now + 59; ah.config("refresh")
+  check("refresh waits at least sixty seconds", requests == 1)
+  replacement_now = replacement_now + 1; mode = "throw"
+  check("refresh thrown sender caught", pcall(ah.config, "refresh"))
+  ah.config("refresh")
+  check("failed attempt also debounced", requests == 2)
+  replacement_now = replacement_now + 60; mode = "false"
+  check("refresh false sender rejected", ah.refresh() == false and requests == 3)
+  mode = "ok"
+
+  local opts = replacement_fixture()
+  opts.enabled = true
+  S.herd_observed.daler.at = replacement_now - 181
+  local stale_at = S.herd_observed.daler.at
+  before_saves = saves
+  requests = 0
+  ah.config("forecast"); ah.config("replace preview"); ah.replacement_preview()
+  check("stale previews never refresh", requests == 0 and saves == before_saves)
+  check("stale preview explains refresh and grid wait", count_notes("Use /vik herd refresh") > 0
+    and count_notes("~5 minutes") > 0)
+  ah.tick()
+  check("authorized stale idle requests without spending or promoting receipt", requests == 1
+    and #sent == 0 and saves == before_saves and S.herd_observed.daler.at == stale_at
+    and replacement.status(opts).phase == "idle")
+  replacement_now = replacement_now + 119; ah.tick()
+  check("automatic refresh bounded to 120 seconds", requests == 1)
+  replacement_now = replacement_now + 21; ah.tick()
+  check("unchanged stale data can request again", requests == 2)
+  -- Simulate a full receipt with unchanged values, as cache invalidation permits.
+  replacement_now = replacement_now + 21
+  for _, receipt in pairs(S.herd_observed) do receipt.at = replacement_now; receipt.seq = receipt.seq + 1 end
+  S.herds.sheepfold._received_at = replacement_now
+  S.lmarket[1][1]._received_at = replacement_now
+  for _, row in pairs(S.trade_goods[1]) do row._received_at = replacement_now end
+  ah.tick()
+  check("actual fresh receipts recover replacement", #sent == 1 and replacement.busy(opts))
+  replacement_now = replacement_now + 120; ah.tick()
+  check("busy job never automatically refreshes", requests == 2)
+  replacement.cancel(opts, "test halt"); ah.tick()
+  check("halted job never automatically refreshes", requests == 2)
+  local marker, enabled_before = opts.in_flight, opts.enabled
+  before_saves = saves
+  ah.config("refresh")
+  check("manual refresh cannot reset a halt or authorize actions", opts.in_flight == marker
+    and opts.enabled == enabled_before and saves == before_saves and #sent == 1)
+  for _, gate in ipairs({ "master", "replacement", "pending", "queue", "settling" }) do
+    opts = replacement_fixture(); opts.enabled = true
+    S.herd_observed.daler.at = replacement_now - 181
+    if gate == "master" then page_opts.set("auto_herd", false)
+    elseif gate == "replacement" then opts.enabled = false
+    elseif gate == "pending" then S.lpending = { { bldg = "sheepfold", count = 1 } }
+    elseif gate == "queue" then S.bqueue_used = 1
+    else S.at_hold_until = replacement_now + 60 end
+    local before = requests
+    ah.tick()
+    check("automatic refresh blocked by " .. gate, requests == before and #sent == 0)
+  end
+  gmcp = nil
+end
+do
+  local opts = replacement_fixture()
+  opts.enabled = true
+  S.herds.sheepfold.head = 19
+  S.herds.sheepfold.management.free = 1
+  S.herds.sheepfold.management.cullable = 15
+  S.lmarket = {}
+  local saved_before, notes_before = saves, count_notes("sheepfold: pen not full: head 19/cap 20")
+  local plan, reason, details = ah.replacement_preview()
+  check("preview API forwards bounded rejection details", not plan and reason == "no eligible modeled replacement under current limits"
+    and #details == 1 and details[1].building == "sheepfold")
+  check("API diagnostics are silent", count_notes("sheepfold: pen not full: head 19/cap 20") == notes_before)
+  ah.config("forecast"); ah.config("replace preview")
+  check("both explicit CLI previews print actual pen gate", count_notes("sheepfold: pen not full: head 19/cap 20") == notes_before + 2)
+  check("rejected CLI preview neither sends nor saves", saves == saved_before and #sent == 0
+    and opts.enabled and not replacement.busy(opts) and opts.daily == nil)
+  notes_before = count_notes("sheepfold: pen not full: head 19/cap 20")
+  ah.tick()
+  check("idle tick does not print preview rejection details", count_notes("sheepfold: pen not full: head 19/cap 20") == notes_before)
+end
+-- Feed gates only the start of replacement, before any reservation or marker.
+do
+  local function stock(n)
+    S.wstock_by_good = { grain = { good = "grain", amount = n } }
+    S.wstock = { { good = "grain", amount = n } }
+  end
+  local function copy(t)
+    if type(t) ~= "table" then return t end
+    local r = {}; for k, v in pairs(t) do r[k] = copy(v) end; return r
+  end
+  local function equal(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+  end
+  local opts = replacement_fixture()
+  opts.enabled, opts.cooldown = true, 0
+  local settings = ah.settings()
+  settings.feed_guard, settings.feed_ticks = true, 4
+  S.lfeed = { grain = 33, water = 0, head = 20 }
+  stock(107)
+  local ordinary = ah.plan()
+  check("feed 107/33 with 132 buffer warns in ordinary planner", ordinary and ordinary.kind == "warn"
+    and ordinary.why == "feed low: 107 grain, herds need 33/tick (132 buffer) - stock grain!")
+  local saved_before, notes_before = saves, #notes
+  local before = copy({ settings = S.autoherd, herds = S.herds, feed = S.lfeed, stock = S.wstock_by_good })
+  local plan, reason, details, feed = ah.replacement_preview()
+  check("feed preview preserves useful candidate and adds separate warning", plan and reason == "ready" and #details == 0
+    and feed == ordinary.why and #notes == notes_before)
+  ah.config("forecast"); ah.config("replace preview")
+  check("explicit previews show candidate and execution feed blocker", count_notes("new replacement execution blocked:") == 2
+    and count_notes("preview ONLY:") >= 2)
+  check("feed preview is read-only", equal(before, { settings = S.autoherd, herds = S.herds, feed = S.lfeed, stock = S.wstock_by_good })
+    and saves == saved_before and #sent == 0)
+  S.herds.sheepfold.management.auto_slaughter = 1
+  local rejected, _, rejected_details, rejected_feed = ah.replacement_preview()
+  ah.config("forecast")
+  check("feed context does not hide candidate rejection details", not rejected and #rejected_details == 1
+    and rejected_details[1].reason:find("auto_slaughter", 1, true) and rejected_feed == ordinary.why
+    and count_notes("sheepfold: server auto_slaughter") > 0)
+  S.herds.sheepfold.management.auto_slaughter = 0
+  notes_before = count_notes("feed low:")
+  for i = 1, 3 do
+    ah.tick()
+    replacement_now = replacement_now + ah.AH_INTERVAL
+  end
+  check("low feed never sends or reserves new replacement", #sent == 0 and opts.daily == nil
+    and opts.in_flight == nil and saves == saved_before and opts.enabled)
+  check("replacement shortage reuses ordinary warning dedupe", count_notes("feed low:") == notes_before + 1)
+  stock(108); ah.tick()
+  check("changed feed shortage warns once", count_notes("feed low:") == notes_before + 2 and #sent == 0)
+  stock(132); ah.tick()
+  check("feed recovery preserves planning interval throttle", #sent == 0)
+  replacement_now = replacement_now + ah.AH_INTERVAL
+  ah.tick()
+  check("exact 132 buffer permits one persisted cull", #sent == 1
+    and sent[1] == "vlivestock slaughter sheepfold 2 worst" and replacement.busy(opts)
+    and opts.daily.spent == 20 and opts.daily.culled == 2)
+
+  stock(107)
+  ah.tick()
+  check("low feed waiting cull neither halts nor repeats", #sent == 1 and replacement.status(opts).phase == "await_cull")
+  replacement_now = replacement_now + 1
+  S.herds.sheepfold.head, S.herds.sheepfold.management.free = 18, 2
+  S.herds.sheepfold.management.cullable = 14
+  S.herds.sheepfold._received_at = replacement_now
+  S.herd_observed.herds = { at = replacement_now, seq = 2 }
+  S.bqueue, S.bqueue_used = { { slot = 1, species = "sheep", meat = "mutton", qty = 24 } }, 1
+  S.herd_observed.bqueue = { at = replacement_now, seq = 2 }
+  ah.tick()
+  check("low feed permits confirmed cull guarded buy", #sent == 2
+    and sent[2] == "vlivestock buy lodbrok 1 2 " .. string.rep("a", 32)
+    and replacement.status(opts).phase == "await_pending")
+  S.lpending = { { bldg = "sheepfold", breed = "nordic", species = "sheep", count = 2, secs = 10800 } }
+  S.herd_observed.pending = { at = replacement_now, seq = 2 }
+  ah.tick()
+  check("low feed permits pending confirmation without commands", #sent == 2 and replacement.status(opts).phase == "await_delivery")
+  S.lpending = {}
+  S.herd_observed.pending = { at = replacement_now, seq = 3 }
+  S.herd_observed.herds = { at = replacement_now, seq = 3 }
+  S.herds.sheepfold.head, S.herds.sheepfold.management.free = 20, 0
+  S.herds.sheepfold.management.cullable = 16
+  ah.tick()
+  check("low feed permits delivery confirmation", #sent == 2 and replacement.status(opts).phase == "cooldown")
+  ah.tick()
+  check("low feed permits cooldown completion without another cull", #sent == 2 and not replacement.busy(opts))
+  check("completed herd still has a viable candidate", ah.replacement_preview() ~= nil)
+  ah.tick()
+  check("low feed gates next job after completion", #sent == 2 and not replacement.busy(opts)
+    and opts.daily.spent == 20 and opts.daily.culled == 2)
+
+  opts = replacement_fixture(); opts.enabled = true
+  settings = ah.settings(); settings.feed_guard, settings.feed_ticks = false, 7
+  stock(0)
+  local _, _, _, off_warning = ah.replacement_preview()
+  ah.tick()
+  check("explicit feed off permits replacement without changing settings", #sent == 1
+    and not settings.feed_guard and settings.feed_ticks == 7 and off_warning == nil)
+
+  opts = replacement_fixture(); opts.enabled = true
+  settings = ah.settings(); settings.feed_guard, settings.feed_ticks = true, 5
+  stock(132); ah.tick()
+  check("replacement respects custom feed_ticks", #sent == 0 and opts.daily == nil and settings.feed_ticks == 5
+    and settings.status:find("165 buffer", 1, true))
+  stock(165); replacement_now = replacement_now + ah.AH_INTERVAL; ah.tick()
+  check("custom feed buffer equality allows replacement", #sent == 1 and settings.feed_ticks == 5)
+
+  opts = replacement_fixture(); opts.enabled = true
+  settings = ah.settings(); settings.feed_guard, settings.feed_ticks = true, 0
+  stock(32); ah.tick()
+  check("replacement shares minimum one feed tick", #sent == 0 and settings.feed_ticks == 0)
+  stock(33); replacement_now = replacement_now + ah.AH_INTERVAL; ah.tick()
+  check("minimum feed tick equality allows without rewriting zero", #sent == 1 and settings.feed_ticks == 0)
+
+  opts = replacement_fixture(); opts.enabled = true
+  settings = ah.settings(); settings.feed_guard = true
+  S.lfeed = { grain = 0, water = 0, head = 0 }
+  stock(11); ah.tick()
+  check("replacement shares owned head fallback ceil20over8 times4", #sent == 0
+    and settings.status:find("3/tick (12 buffer)", 1, true))
+  stock(12); S.wstock_by_good = {}
+  replacement_now = replacement_now + ah.AH_INTERVAL; ah.tick()
+  check("replacement shares warehouse array fallback", #sent == 1)
+end
+local ro = replacement_fixture()
+local saved_settings = S.autoherd
+S.autoherd = nil
+local pure_saves = saves
+ah.config("forecast"); ah.config("replace preview"); ah.replacement_preview()
+check("forecast before settings initialization is read-only", S.autoherd == nil and saves == pure_saves and #sent == 0)
+S.autoherd = saved_settings
+local manual_models, manual_overhead = ro.models, ro.overhead
+ro.models, ro.overhead, ro.enabled = {}, nil, true
+S.production = { wool = 1 }
+S.herd_observed.production = { at = replacement_now, seq = 1 }
+local observed_preview = ah.replacement_preview()
+check("context derives fresh production without missing-model setup", observed_preview
+  and observed_preview.forecast_input.production_per_tick == 1
+  and observed_preview.forecast_input.scaled_share == nil)
+ah.config("forecast")
+ah.tick()
+check("saved enabled with preview still lacks execution acknowledgement", #sent == 0
+  and ro.overhead == nil and next(ro.models) == nil)
+S.herd_observed.production = nil
+S.herd_connection_epoch = 2
+check("reset production receipt rejects cached output", ah.replacement_preview() == nil)
+ro.models, ro.overhead, ro.enabled = manual_models, manual_overhead, false
+S.herd_connection_epoch = 1
+check("replacement defaults safe off", ro.enabled == false and ro.models.sheepfold.production_per_tick == 1)
+for _, toggles in ipairs({ { false, false }, { true, false }, { false, true } }) do
+  page_opts.set("auto_herd", toggles[1])
+  ro.enabled = toggles[2]
+  local saved_before, notes_before = saves, count_notes("preview ONLY:")
+  local daily_before = ro.daily
+  local preview = ah.replacement_preview()
+  ah.config("forecast"); ah.config("replace preview")
+  check("preview works with master=" .. tostring(toggles[1]) .. " replace=" .. tostring(toggles[2]),
+    preview and preview.cost == 20 and preview.forecast.net_low == 80
+      and count_notes("preview ONLY:") == notes_before + 2)
+  check("preview preserves toggles and state without saves or sends",
+    page_opts.get("auto_herd") == toggles[1] and ro.enabled == toggles[2]
+      and ah.settings().replace == ro and ro.daily == daily_before
+      and not replacement.busy(ro) and saves == saved_before and #sent == 0)
+  ah.tick()
+  check("preview never authorizes a later cull", #sent == 0)
+end
+page_opts.set("auto_herd", true)
+ah.config("forecast"); ah.config("replace on"); ah.config("replace preview"); ah.config("replace status")
+check("configuration and preview send nothing", #sent == 0 and not replacement.busy(ro))
+local proposal = ah.replacement_preview()
+check("real replacement preview has cost and profit", proposal and proposal.cost == 20 and proposal.forecast.net_low == 80)
+check("replacement context preserves raw records", ah.replacement_context().herds == S.herds
+  and ah.replacement_context().observed == S.herd_observed)
+S.trade_goods[1].wool = { sell = 100, demand = 100 }
+check("replacement quote cannot inherit old timestamp", ah.replacement_context().prices.wool.at == nil
+  and ah.replacement_preview() == nil)
+S.trade_goods[1].wool._received_at = replacement_now - 181
+ah.tick()
+check("stale selected price sends nothing", #sent == 0)
+ro = replacement_fixture(); ah.config("replace on")
+page_opts.set("auto_herd", false); ah.tick()
+check("master off sends nothing", #sent == 0)
+page_opts.set("auto_herd", true); ah.tick()
+check("real replacement starts one cull", #sent == 1 and sent[1] == "vlivestock slaughter sheepfold 2 worst")
+check("settings retains job identity", ah.settings().replace == ro and replacement.status(ro).phase == "await_cull")
+ah.tick()
+check("waiting replacement never repeats", #sent == 1)
+ah.config("replace reset")
+check("active reset rejected", replacement.busy(ro))
+replacement_now = replacement_now + 1
+S.herds.sheepfold.head = 18
+S.herds.sheepfold.management.free = 2
+S.herds.sheepfold.management.cullable = 14
+S.herds.sheepfold._received_at = replacement_now
+S.herd_observed.herds = { at = replacement_now, seq = 2 }
+S.bqueue, S.bqueue_used = { { slot = 1, species = "sheep", meat = "mutton", qty = 24 } }, 1
+S.herd_observed.bqueue = { at = replacement_now, seq = 2 }
+ah.tick()
+check("confirmed cull sends guarded buy", #sent == 2 and sent[2] == "vlivestock buy lodbrok 1 2 " .. string.rep("a", 32))
+S.lpending = { { bldg = "sheepfold", breed = "nordic", species = "sheep", count = 2, secs = 10800 } }
+S.herd_observed.pending = { at = replacement_now, seq = 2 }
+ah.tick()
+check("pending receipt persists delivery phase without send", replacement.status(ro).phase == "await_delivery" and #sent == 2)
+S.lpending = {}
+S.herd_observed.pending = { at = replacement_now, seq = 3 }
+S.herd_observed.herds = { at = replacement_now, seq = 3 }
+S.herds.sheepfold.head, S.herds.sheepfold.management.free = 20, 0
+S.herds.sheepfold.management.cullable = 16
+ah.tick()
+check("delivery receipt enters cooldown without sends", replacement.status(ro).phase == "cooldown" and #sent == 2)
+page_opts.set("auto_herd", false); ah.tick()
+check("master off retains persisted halt", replacement.status(ro).phase == "halted" and saves > 0)
+page_opts.set("auto_herd", true); replacement_now = replacement_now + 1000; ah.tick()
+check("halt blocks all normal autoherd", #sent == 2)
+ah.config("replace reset")
+check("explicit reset disables and retains budget", not replacement.busy(ro) and not ro.enabled and ro.daily.spent == 20)
+ro = replacement_fixture(); ah.config("replace on"); ah.tick()
+mud_connected = false; ah.tick()
+check("disconnect halts before early return", replacement.status(ro).phase == "halted" and #sent == 1 and saves > 0)
+ro = replacement_fixture(); ah.config("replace on")
+mud.send = function() error("test send failure") end
+check("send exception halts without crash", pcall(ah.tick) and replacement.status(ro).phase == "halted")
+ro = replacement_fixture(); ah.config("replace on"); fail_save = true
+local tick_ok = pcall(ah.tick)
+check("persistence exception fails closed without crash or send", tick_ok and #sent == 0 and replacement.status(ro).phase == "halted")
+fail_save = false; replacement_now = replacement_now + 1000; ah.tick()
+check("persistence failure stays blocked", #sent == 0)
+ro = replacement_fixture(); ah.config("replace on")
+persist.save = function() return false, "disk full" end
+check("false save result fails closed", pcall(ah.tick) and #sent == 0 and replacement.status(ro).phase == "halted")
+persist.save = function() saves = saves + 1 end
+ro = replacement_fixture(); ah.config("replace on"); ah.tick()
+S.herds.sheepfold.head, S.herds.sheepfold.management.free = 18, 2
+S.herds.sheepfold.management.cullable = 14
+S.herd_observed.herds.seq, S.herd_observed.bqueue.seq = 2, 2
+S.bqueue, S.bqueue_used = { { slot = 1, species = "sheep", meat = "mutton", qty = 24 } }, 1
+persist.save = function() return nil, "disk full" end
+check("buy marker save error blocks guarded buy", pcall(ah.tick) and #sent == 1
+  and replacement.status(ro).phase == "halted")
+persist.save = function() saves = saves + 1 end
+ah.tick()
+check("recovered persistence never retries blocked buy", #sent == 1)
+
+ro = replacement_fixture()
+local halt_snapshot, attempts = nil, 0
+persist.save = function()
+  attempts = attempts + 1
+  if attempts == 1 then error("transient configuration save failure") end
+  halt_snapshot = ah.snapshot()
+end
+ah.config("replace overhead 1")
+check("idle save failure creates durable halt", #sent == 0 and attempts == 2
+  and halt_snapshot.autoherd.replace.in_flight.phase == "halted"
+  and replacement.status(ro).phase == "halted")
+-- Make ordinary restocking viable so the halt, rather than a full pen, blocks it.
+S.herds = {}
+mud.send = function(cmd) sent[#sent + 1] = cmd end
+check("ordinary buy is viable during persistence halt", ah.plan() ~= nil and ah.plan().kind == "buy")
+persist.save = function() saves = saves + 1 end
+ah.tick(); ah.config("replace on"); ah.tick()
+check("idle save failure blocks ordinary sends and reenable", #sent == 0 and not ro.enabled)
+ah.restore(halt_snapshot); ah.tick()
+check("persisted idle halt blocks sends after restore", #sent == 0
+  and replacement.status(ah.settings().replace).phase == "halted")
+persist.save = function() return false, "reset save failure" end
+ah.config("replace reset"); ah.tick()
+check("failed reset save stays halted", #sent == 0
+  and replacement.status(ah.settings().replace).phase == "halted")
+persist.save = function() saves = saves + 1 end
+ah.config("replace reset"); ah.tick()
+check("successful explicit reset permits ordinary buys", #sent == 1
+  and not ah.settings().replace.enabled)
+ro = replacement_fixture()
+ah.restore({ autoherd = { replace = { enabled = true, in_flight = { phase = "await_pending" } } } })
+check("restored in-flight becomes halted and saved once", replacement.status(ah.settings().replace).phase == "halted" and saves > 0)
+local saved_count = saves
+ah.settings(); ah.settings()
+check("recovery does not resave on each settings read", saves == saved_count)
+ro = replacement_fixture()
+ah.config("replace minprofit -12.5"); ah.config("model sheepfold share 0.25")
+ah.config("replace horizon 10"); ah.config("replace gap 2")
+check("signed profit and fractional share accepted", ro.min_profit == -12.5 and ro.models.sheepfold.scaled_share == 0.25)
+ah.config("replace maxcost 1e309"); ah.config("replace gap 11"); ah.config("model sheepfold share 2")
+check("invalid finite bounds rejected", ro.max_cost == 500 and ro.gap_ticks == 2 and ro.models.sheepfold.scaled_share == 0.25)
+-- Exercise the real persistence wrapper: native store failures are booleans,
+-- not the exceptions/return values injected into persist.save above.
+persist.save = original_save
+do
+  local original_set, original_store_save = store.set, store.save
+  for _, succeeds in ipairs({ true, "legacy nil" }) do
+    local set_calls, save_calls = 0, 0
+    store.set = function(data)
+      set_calls = set_calls + 1
+      stored = data
+      if succeeds == true then return true end
+    end
+    store.save = function()
+      save_calls = save_calls + 1
+      if succeeds == true then return true end
+    end
+    local ok, result = pcall(persist.save)
+    check("real persist accepts " .. tostring(succeeds) .. " storage success and returns nil",
+      ok and result == nil and set_calls == 1 and save_calls == 1)
+    ro = replacement_fixture(); ah.config("replace on")
+    mud.send = function(cmd) sent[#sent + 1] = cmd end
+    ah.tick()
+    check("real persist permits cull after " .. tostring(succeeds) .. " storage success",
+      #sent == 1 and sent[1] == "vlivestock slaughter sheepfold 2 worst")
+  end
+  for _, failed_operation in ipairs({ "set", "save" }) do
+    store.set, store.save = original_set, original_store_save
+    ro = replacement_fixture(); ah.config("replace on")
+    check("real persist failure fixture has viable replacement: " .. failed_operation,
+      ah.replacement_preview() ~= nil)
+    local set_calls, save_calls = 0, 0
+    store.set = function(data)
+      set_calls = set_calls + 1
+      if failed_operation == "set" then return false end
+      stored = data
+      return true
+    end
+    store.save = function()
+      save_calls = save_calls + 1
+      return false
+    end
+    local ok, err = pcall(persist.save)
+    check("real persist throws descriptive store." .. failed_operation .. " failure",
+      not ok and tostring(err):find("store." .. failed_operation .. " failed", 1, true))
+    set_calls, save_calls = 0, 0
+    mud.send = function(cmd) sent[#sent + 1] = cmd end
+    check("real store." .. failed_operation .. " false halts with zero sends",
+      pcall(ah.tick) and #sent == 0 and replacement.status(ro).phase == "halted"
+        and ah.settings().status:find("store." .. failed_operation .. " failed", 1, true))
+    check("real store." .. failed_operation .. " failure attempts best-effort halt save",
+      set_calls == 2 and save_calls == (failed_operation == "set" and 0 or 2))
+    store.set, store.save = original_set, original_store_save
+    replacement_now = replacement_now + 1000
+    ah.tick()
+    check("real store." .. failed_operation .. " recovery never resumes sends without reset",
+      #sent == 0 and replacement.status(ro).phase == "halted")
+  end
+  store.set, store.save = original_set, original_store_save
+end
+persist.save, os.time = original_save, real_time
 
 if failures > 0 then
   print(failures .. " FAILURE(S)")
