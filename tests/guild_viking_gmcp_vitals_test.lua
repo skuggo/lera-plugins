@@ -37,20 +37,8 @@ local RESERVED = { _market_seam = true, _patterns = true, _gmcp = true,
 for _, name in ipairs({ "handlers.trade", "handlers.kingdom", "handlers.voyage",
                         "handlers.city", "handlers.vitals" }) do
   local mod = require(name)
-  for key, fn in pairs(mod) do
-    if not RESERVED[key] then protocol.handler(key, fn) end
-  end
-  for _, pat in ipairs(mod._patterns or {}) do
-    protocol.pattern_handler(pat.pattern, pat.fn)
-  end
   for key, fn in pairs(mod._gmcp or {}) do
     protocol.gmcp_handler(key, fn)
-  end
-  for _, k in ipairs(mod._retired_keys or {}) do
-    protocol.retired_key(k)
-  end
-  for _, pat in ipairs(mod._retired_patterns or {}) do
-    protocol.retired_pattern(pat)
   end
 end
 
@@ -323,46 +311,6 @@ S.hp, S.mhp = 0, 0
 fire_hp_bar_1()
 check("after a reconnect with no GMCP frame, the trigger writes again",
       S.hp == 11 and S.mhp == 22, S.hp .. "/" .. S.mhp)
-
--- ---------------------------------------------------------------------------
--- /vik source mip has to release the latch
---
--- `source mip` stops GMCP frames at protocol.on_gmcp's gmcp_allowed() gate.
--- For every other pane that just blanks the GMCP-fed data, which the command's
--- own help says outright. The vitals block is the one place where the legacy
--- transport still WORKS -- the hp-bar triggers are right there -- so leaving
--- the latch set would stand the triggers down while nothing replaced them, and
--- the bars would freeze on the last GMCP frame's numbers rather than falling
--- back. Freezing is the worst of the three outcomes: it looks live.
--- ---------------------------------------------------------------------------
-state.reset_connection()
-vstate({ hp = { cur = 900, max = 1000, threk = 0, mthrek = 0, delta = 0 } })
-check("latched before switching source", S.vitals_gmcp == true, tostring(S.vitals_gmcp))
-
-protocol.source("mip")
-check("source mip releases the vitals latch", S.vitals_gmcp ~= true,
-      tostring(S.vitals_gmcp))
-S.hp, S.mhp = 0, 0
-fire_hp_bar_1()
-check("under source mip the hp-bar trigger writes again",
-      S.hp == 11 and S.mhp == 22, S.hp .. "/" .. S.mhp)
-
--- And a GMCP frame really is suppressed in that mode, so the trigger is not
--- merely racing a frame that also landed.
-vstate({ hp = { cur = 900, max = 1000, threk = 0, mthrek = 0, delta = 0 } })
-check("under source mip a vitals frame is dropped, latch stays clear",
-      S.hp == 11 and S.vitals_gmcp ~= true,
-      S.hp .. "/" .. tostring(S.vitals_gmcp))
-
--- Switching back re-arms on the next frame rather than immediately: the latch
--- means "a frame has arrived", so it must be earned, not assumed.
-protocol.source("auto")
-check("source auto alone does not re-arm the latch", S.vitals_gmcp ~= true,
-      tostring(S.vitals_gmcp))
-vstate({ hp = { cur = 750, max = 1000, threk = 0, mthrek = 0, delta = 0 } })
-check("the next frame after source auto re-arms the latch and writes",
-      S.vitals_gmcp == true and S.hp == 750,
-      tostring(S.vitals_gmcp) .. "/" .. S.hp)
 
 if failures > 0 then os.exit(1) end
 print("ALL GUILD_VIKING GMCP VITALS TESTS PASSED")

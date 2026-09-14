@@ -2,7 +2,7 @@
 -- guild_viking.lua (github.com/.../3s_scripts_old, read-only reference).
 -- Each parser body transcribes its LEGACY `elseif key == "..."` branch:
 -- string.split -> util.split, state. -> S. (module-local alias). Display
--- calls (viking_window.*, ColourNote) are dropped -- protocol.ingest already
+-- calls (viking_window.*, ColourNote) are dropped -- the protocol layer already
 -- marks ui.dirty(); parsers never do.
 local S = require("state").S
 local util = require("util")
@@ -42,27 +42,6 @@ local GOOD_SHORT = {
 
 -- STAFF stat-slot order (LEGACY guild_viking.lua:2348).
 local STAFF_STAT_ORDER = { "combat", "trade", "craft", "sea", "wild", "land", "charm" }
-
--- LEGACY 1437
-M.CELLAR = function(val)
-  local stock, cap, tier = val:match("^([^|]+)|([^|]+)|([^|;]+)")
-  S.cellar = {
-    stock = tonumber(stock) or 0,
-    cap = tonumber(cap) or 0,
-    tier = tonumber(tier) or 0,
-    lots = {}
-  }
-  -- Parse per-quality-bracket entries after header
-  local lots_part = val:match("^[^|]+|[^|]+|[^|;]+;(.*)$")
-  if lots_part then
-    for lot_entry in lots_part:gmatch("[^;]+") do
-      local qty, pct = lot_entry:match("^([^|]+)|([^|]+)$")
-      if qty then
-        table.insert(S.cellar.lots, { qty=tonumber(qty) or 0, pct=tonumber(pct) or 100 })
-      end
-    end
-  end
-end
 
 -- ---------------------------------------------------------------------------
 -- Guild.TradeGoods

@@ -1,5 +1,5 @@
--- Cross-session persistence: the rolling price history (market.lua), the
--- transport source mode (protocol.lua), (stage 2) the page options and
+-- Cross-session persistence: the rolling price history (market.lua),
+-- (stage 2) the page options and
 -- current page (page_opts.lua / window.lua), and (stage 4) the auto-trade
 -- settings knobs (autotrader/core.lua, Task 1), the auto-raid settings
 -- (autoraid.lua, Task 8: target/ships/convoy), the auto-voyage settings
@@ -16,7 +16,6 @@
 -- etc.) that would be stale on the next load, so it is deliberately NOT
 -- persisted here.
 local market = require("market")
-local protocol = require("protocol")
 local page_opts = require("page_opts")
 local window = require("window")
 local at_core = require("autotrader.core")
@@ -49,7 +48,6 @@ function M.save()
   for _, o in ipairs(page_opts.all()) do opts[o.key] = o.value end
 
   store.set({
-    settings = { source = protocol.source() },
     price_history = market.snapshot().price_history,
     page_opts = opts,
     page = window.current_page(),
@@ -70,9 +68,6 @@ function M.load()
   if data.price_history then
     market.restore({ price_history = data.price_history })
   end
-
-  local source = data.settings and data.settings.source
-  if source then protocol.source(source) end
 
   if data.page_opts then
     for k, v in pairs(data.page_opts) do page_opts.set(k, v) end

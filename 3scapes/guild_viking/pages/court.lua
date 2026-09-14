@@ -111,7 +111,7 @@ function M.lines(width)
   local d = S.dynasty
   if not d then
     add(pagelib.trunc(C.dim ..
-      "No court data -- run 'vtoggle mip_kingdom' (then vcourt found)" .. pagelib.RESET, width))
+      "No court data yet -- run 'vcourt found' to populate it" .. pagelib.RESET, width))
     return lines
   end
 

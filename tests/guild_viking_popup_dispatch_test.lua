@@ -134,42 +134,16 @@ local protocol = require("protocol")
 local RESERVED_KEYS = { _market_seam = true, _patterns = true, _gmcp = true,
                         _retired_keys = true, _retired_patterns = true }
 local kingdom = require("handlers.kingdom")
-for key, fn in pairs(kingdom) do
-  if not RESERVED_KEYS[key] then
-    protocol.handler(key, fn)
-  end
-end
-for _, p in ipairs(kingdom._patterns or {}) do
-  protocol.pattern_handler(p.pattern, p.fn)
-end
 for key, fn in pairs(kingdom._gmcp or {}) do
   protocol.gmcp_handler(key, fn)
-end
-for _, k in ipairs(kingdom._retired_keys or {}) do
-  protocol.retired_key(k)
-end
-for _, pat in ipairs(kingdom._retired_patterns or {}) do
-  protocol.retired_pattern(pat)
 end
 
 -- Task 5 needs VMAP* too (map.lua's own popup test's seed_vmap uses the
 -- same registration).
 local voyage = require("handlers.voyage")
 local RESERVED = RESERVED_KEYS
-for key, fn in pairs(voyage) do
-  if not RESERVED[key] then protocol.handler(key, fn) end
-end
-for _, p in ipairs(voyage._patterns or {}) do
-  protocol.pattern_handler(p.pattern, p.fn)
-end
 for key, fn in pairs(voyage._gmcp or {}) do
   protocol.gmcp_handler(key, fn)
-end
-for _, k in ipairs(voyage._retired_keys or {}) do
-  protocol.retired_key(k)
-end
-for _, pat in ipairs(voyage._retired_patterns or {}) do
-  protocol.retired_pattern(pat)
 end
 
 local S = state.S

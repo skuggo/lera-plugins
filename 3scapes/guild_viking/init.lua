@@ -7,33 +7,24 @@ local command = require("command")
 -- One registration path for every handler module, so a module gaining a
 -- `_gmcp` table cannot silently go unregistered. Before this, only the `city`
 -- loop forwarded `_gmcp`; the other three would have counted a new GMCP
--- writer's keys `unknown` forever, MIP would have kept working, and nothing
--- would have failed loudly.
+-- writer's keys `unknown` forever and nothing would have failed loudly.
 --
--- The reserved keys are the module-level conventions, not MIP keys:
--- `_market_seam` (trade's injection point for market.lua), `_patterns` (the
--- pattern-handler tier), `_gmcp` (the GMCP writer table) and
--- `_retired_keys`/`_retired_patterns` (MIP keys the server still sends and
--- this plugin no longer reads). Everything else in a module table is an exact
--- MIP key -- of which five are left, all of them keys with no GMCP source yet.
-local RESERVED = { _market_seam = true, _patterns = true, _gmcp = true,
-                   _retired_keys = true, _retired_patterns = true }
+-- A module now carries exactly two things: `_gmcp`, the writer table, and
+-- `_market_seam`, trade's injection point for market.lua. The MIP-era members
+-- -- bare uppercase keys, `_patterns`, `_retired_keys`, `_retired_patterns` --
+-- are gone with the transport, and anything else appearing in a module table
+-- is a mistake worth failing on rather than skipping silently, which is what
+-- the old `if not RESERVED[key]` branch would now do.
+local RESERVED = { _market_seam = true, _gmcp = true }
 
 local function register_handlers(mod)
-  for key, fn in pairs(mod) do
-    if not RESERVED[key] then protocol.handler(key, fn) end
-  end
-  for _, p in ipairs(mod._patterns or {}) do
-    protocol.pattern_handler(p.pattern, p.fn)
+  for key in pairs(mod) do
+    if not RESERVED[key] then
+      error("handler module has an unexpected member: " .. tostring(key))
+    end
   end
   for key, fn in pairs(mod._gmcp or {}) do
     protocol.gmcp_handler(key, fn)
-  end
-  for _, key in ipairs(mod._retired_keys or {}) do
-    protocol.retired_key(key)
-  end
-  for _, pattern in ipairs(mod._retired_patterns or {}) do
-    protocol.retired_pattern(pattern)
   end
 end
 
@@ -78,11 +69,10 @@ local stats_page = require("pages.stats")
 -- file's header comment for the renderer-module contract.
 local popups = require("popups")
 
--- Task 8: combat composite + hp-bar triggers. FFF is a separate MIP composite
--- from BBE (not routed through protocol.lua's key/value dispatch), so it gets
--- its own mip.on registration. The callback is 3-arg (key, code, data); data
--- is the third argument, not the second -- binding the wrong one was a past
--- Critical here.
+-- Task 8: combat composite + hp-bar triggers. The FFF MIP composite this used
+-- to read is gone; Char.Combat carries the attacker block now (subscribed in
+-- on_load), and the hp-bar text triggers stay registered either way because
+-- they are also what gags the prompt lines out of the main buffer.
 local combat = require("combat")
 
 -- Task 9: push notifications + the per-second countdown timer. `pushn` is
@@ -133,7 +123,7 @@ function M.state()
   return state_mod.S
 end
 
-local mip_id, gmcp_id, combat_gmcp_id, sweep_id, countdown_id
+local gmcp_id, combat_gmcp_id, countdown_id
 local combat_trigger_ids = {}
 local notify_trigger_ids = {}
 local vik_command_id, resetvikxp_id, kill_listener_id
@@ -269,11 +259,9 @@ local function gmcp_key_names()
   return names
 end
 
--- The per-key transport breakdown. A mixed system is unobservable without
--- seeing which keys each transport is actually feeding, so this is a plain
--- read: `/vik source` with no argument prints it. It used to live inside the
--- mode-setting branch, which meant the only way to read the breakdown was to
--- re-assert a mode -- a state mutation performed to perform a read.
+-- Which panels GMCP has actually fed, plus the frame counters. There is only
+-- one transport now, so this is no longer a "which source won" breakdown --
+-- it is the answer to "is the guild pushing me anything, and what".
 local function print_sources()
   local names = gmcp_key_names()
   if #names == 0 then
@@ -292,25 +280,21 @@ local function print_sources()
       "  received, not consumed: " .. table.concat(unknown, " "))
   end
   buffer.color_print(nil, "DAA520", string.format(
-    "  frames %d, foreign %d, malformed %d, dropped by source mip %d",
-    gs.frames, gs.foreign, gs.malformed, gs.suppressed))
+    "  frames %d, foreign %d, malformed %d",
+    gs.frames, gs.foreign, gs.malformed))
 end
 
 local function print_status()
-  local st = protocol.stats()
-  -- The old boolean latch is gone; a count of keys GMCP has actually fed
-  -- reads true of the per-key design, where it's never all-or-nothing.
-  -- `/vik source` names them; this stays a one-line summary.
-  --
-  -- `retired` counts MIP keys the guild still sends and this plugin no longer
-  -- reads -- almost all of them, since every key with a GMCP source moved. It
-  -- is deliberately separate from `unknown`, which means "keys nobody has
-  -- taught this client about yet" and would otherwise be swamped.
+  local st = protocol.gmcp_stats()
+  -- One transport, so the summary counts frames and the panels they carried.
+  -- `applied` is per key; the total is what "this client is being fed" means,
+  -- and gmcp_keys is how many distinct panels have ever arrived. `/vik source`
+  -- names them.
+  local applied = 0
+  for _, n in pairs(st.applied) do applied = applied + n end
   buffer.color_print(nil, "DAA520", string.format(
-    "Viking: source=%s gmcp_keys=%d ingested=%d suppressed=%d retired=%d " ..
-    "pending_batches=%d",
-    st.source, #gmcp_key_names(), st.ingested, st.suppressed, st.retired,
-    st.batches_pending))
+    "Viking: gmcp_keys=%d frames=%d applied=%d foreign=%d malformed=%d",
+    #gmcp_key_names(), st.frames, applied, st.foreign, st.malformed))
 
   local unknown = {}
   for k, n in pairs(st.unknown) do unknown[#unknown + 1] = { key = k, n = n } end
@@ -331,7 +315,7 @@ local function print_status()
     err_keys = err_keys + 1
   end
   buffer.color_print(nil, "DAA520", string.format(
-    "  parser errors: %d (%d key%s)", err_total, err_keys, err_keys == 1 and "" or "s"))
+    "  writer errors: %d (%d key%s)", err_total, err_keys, err_keys == 1 and "" or "s"))
 
   print_automation_status()
 end
@@ -402,19 +386,15 @@ function M.vik_command(args)
     persist.save()
     buffer.color_print(nil, "DAA520", "Viking guild data saved.")
   elseif sub == "source" then
-    if rest == "" then
-      -- The read. Reporting the breakdown must not require asserting a mode.
+    -- A read now, whatever follows it. There is one transport, so the old
+    -- mip/gmcp/auto argument has nothing to select; accepting and ignoring it
+    -- says so once rather than erroring at someone's muscle memory.
+    if rest ~= "" then
       buffer.color_print(nil, "DAA520",
-        "Viking transport source: " .. protocol.source())
-      print_sources()
-    elseif rest == "mip" or rest == "gmcp" or rest == "auto" then
-      protocol.source(rest)
-      buffer.color_print(nil, "DAA520", "Viking transport source set to " .. rest .. ".")
-      print_sources()
-    else
-      buffer.color_print(nil, "DAA520",
-        "Usage: /vik source [mip|gmcp|auto] -- 'mip' blanks the Territory Map")
+        "Viking runs on GMCP only; there is no transport to select.")
     end
+    buffer.color_print(nil, "DAA520", "Viking transport: GMCP (Guild.*)")
+    print_sources()
   elseif sub == "resetxp" then
     do_resetxp()
   elseif sub == "opts" then
@@ -456,7 +436,7 @@ function M.vik_command(args)
     buffer.color_print(nil, "DAA520", "Viking page: " .. sub_lower)
   else
     buffer.color_print(nil, "DAA520",
-      "Usage: /vik [status | trace | save | source [mip|gmcp|auto] | resetxp | "
+      "Usage: /vik [status | trace | save | source | resetxp | "
       .. "map | sea | voyage | cityplan | war | page <page> | pop <page> | "
       .. "<page> | opts | set <opt> on|off|toggle | trader [<sub>] | raid [<sub>] | "
       .. "voyage auto [<sub>] | herd [<sub>] | awar [<sub>]]")
@@ -473,9 +453,6 @@ function M.popup_names()
 end
 
 function M.on_load()
-  mip_id = mip.on("BBE", function(key, code, data) protocol.on_bbe(data) end)
-
-
   -- Char.Combat is not a Guild.* frame -- it carries no guild envelope and does
   -- not go through protocol.on_gmcp -- so it gets its own subscription here,
   -- next to the MIP channel it replaces. Subscribing advertises `Char 1`.
@@ -487,13 +464,6 @@ function M.on_load()
   -- the mudlib's root fallback. A panel added server-side later needs no change
   -- here.
   gmcp_id = gmcp.on("Guild", function(pkg, data) protocol.on_gmcp(pkg, data) end)
-  -- protocol.sweep's grace period is measured in seconds (LEGACY parity, see
-  -- protocol.lua's sweep comment), and lera.time() already returns epoch
-  -- seconds, so it passes through unscaled. This used to divide by 1000, on the
-  -- false premise -- taken from a wrong lera.time() help string -- that the API
-  -- returned milliseconds; that turned the intended ~2s grace into ~2000s, so
-  -- an incomplete known-total batch was effectively never dropped.
-  sweep_id = timer.every(100, function() protocol.sweep(lera.time()) end)
 
   -- Fix 1: persist.load() must run BEFORE the initial combat-trigger
   -- registration, not after. register_combat_triggers() reads
@@ -522,18 +492,15 @@ function M.on_load()
 
   local id, err = command.register({
     name = "/vik",
-    usage = "/vik [status | trace | save | source [mip|gmcp|auto] | resetxp | "
+    usage = "/vik [status | trace | save | source | resetxp | "
       .. "map | sea | voyage | cityplan | war | page <page> | pop <page> | "
       .. "<page> | opts | set <opt> on|off|toggle | trader [<sub>] | raid [<sub>] | "
       .. "voyage auto [<sub>] | herd [<sub>] | awar [<sub>]]",
     summary = "Viking guild data, pane, and controls",
     description = "Ingestion status and counters, plus each automation's "
-      .. "on/off state and last-action/next-eligible summary (status), message tracing "
-      .. "(trace), explicit save (save), transport selection (source; note "
-      .. "that 'source mip' blanks the Territory Map, which is fed by "
-      .. "Guild.Map and has no MIP path any more, and hands the vitals bars "
-      .. "back to the hp-bar prompt triggers, which need the prompt to be "
-      .. "on), the "
+      .. "on/off state and last-action/next-eligible summary (status), key tracing "
+      .. "(trace), explicit save (save), the per-panel GMCP feed report "
+      .. "(source), the "
       .. "saga-XP session reset (resetxp; the bare 'resetvikxp' alias does "
       .. "the same), toggling a named popup open or closed -- map (Territory "
       .. "Map), sea (Sea Chart), voyage (Voyage Status), cityplan (City "
@@ -605,10 +572,8 @@ end
 function M.on_unload()
   persist.save()
 
-  mip.off(mip_id)
   gmcp.remove(gmcp_id)
   gmcp.remove(combat_gmcp_id)
-  timer.cancel(sweep_id)
   timer.cancel(countdown_id)
   unregister_combat_triggers()
   for _, tid in ipairs(notify_trigger_ids) do
@@ -676,7 +641,11 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.has_data()
-  return protocol.stats().ingested > 0
+  -- Any panel having arrived, not a frame count: an empty-but-delivered frame
+  -- is still the guild talking to us. This read the MIP ingest counter before,
+  -- which would now be zero forever and leave the stats widget permanently
+  -- blank -- the one place the transport swap could have gone silently wrong.
+  return next(protocol.gmcp_keys()) ~= nil
 end
 
 local function rect_dims(rect)

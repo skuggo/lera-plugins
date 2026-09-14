@@ -152,7 +152,7 @@ end
 
 local function no_data_lines(add, width)
   add(pagelib.header(width, "Trade Goods"))
-  add(pagelib.trunc(C.dim .. "No data -- enable with: vtoggle mip_trade_goods" .. pagelib.RESET, width))
+  add(pagelib.trunc(C.dim .. "No data yet -- town prices arrive as the guild reports them" .. pagelib.RESET, width))
 end
 
 -- ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ local function movers_block_lines(add, width)
   local arb = market.compute_market_movers()
   if #arb == 0 then
     add(pagelib.trunc(
-      C.dim .. "Gathering data - need town prices (vtoggle mip_trade_goods)" .. pagelib.RESET, width))
+      C.dim .. "Gathering data - waiting on town prices" .. pagelib.RESET, width))
   else
     local show_n = (S.autotrade and S.autotrade.show_n) or 6
     local shown = math.min(#arb, show_n)

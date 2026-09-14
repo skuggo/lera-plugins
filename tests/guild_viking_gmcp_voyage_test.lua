@@ -30,20 +30,8 @@ local RESERVED = RESERVED_KEYS
 for _, name in ipairs({ "handlers.trade", "handlers.kingdom", "handlers.voyage",
                         "handlers.city" }) do
   local mod = require(name)
-  for key, fn in pairs(mod) do
-    if not RESERVED[key] then protocol.handler(key, fn) end
-  end
-  for _, pat in ipairs(mod._patterns or {}) do
-    protocol.pattern_handler(pat.pattern, pat.fn)
-  end
   for key, fn in pairs(mod._gmcp or {}) do
     protocol.gmcp_handler(key, fn)
-  end
-  for _, k in ipairs(mod._retired_keys or {}) do
-    protocol.retired_key(k)
-  end
-  for _, pat in ipairs(mod._retired_patterns or {}) do
-    protocol.retired_pattern(pat)
   end
 end
 
@@ -210,6 +198,34 @@ check("vaids", #S.voyage_aids == 1 and S.voyage_aids[1].name == "rope")
 voy({ vrunes = { algiz = 1 } })
 check("vrunes", #S.voyage_runes == 1 and S.voyage_runes[1].count == 1)
 
+-- ---- vrelics ---------------------------------------------------------------
+-- The Sea popup renders finished "Name xN" strings, which MIP built on the
+-- server. GMCP sends raw ids plus a vrelic_names lookup, and the rendering
+-- happens in the writer -- so these cases pin the rendering, the ordering and
+-- the two delta shapes that broke the naive version.
+voy({ vrelics = { jarls_torc = 2, sea_eye = 1 },
+      vrelic_names = { jarls_torc = "Jarl's Torc", sea_eye = "Sea Eye" } })
+check("vrelics renders name xN, sorted by display name",
+      #S.voyage_relics == 2 and S.voyage_relics[1] == "Jarl's Torc x2"
+      and S.voyage_relics[2] == "Sea Eye x1",
+      table.concat(S.voyage_relics, "|"))
+-- A delta carrying only the counts has to keep rendering: the name table is
+-- sent on the full frame and then delta-suppressed, so a writer that required
+-- both halves would blank the panel on every subsequent count change.
+voy({ vrelics = { jarls_torc = 5, sea_eye = 1 } })
+check("a counts-only delta reuses the names already learned",
+      S.voyage_relics[1] == "Jarl's Torc x5", table.concat(S.voyage_relics, "|"))
+-- An id with no name anywhere falls back to the id rather than vanishing.
+voy({ vrelics = { jarls_torc = 1, mystery_shard = 4 } })
+check("an unnamed id falls back to the id, it is not dropped",
+      #S.voyage_relics == 2 and S.voyage_relics[2] == "mystery_shard x4",
+      table.concat(S.voyage_relics, "|"))
+-- Zero counts are omissions, not rows -- the server skips them too.
+voy({ vrelics = { jarls_torc = 0, sea_eye = 3 } })
+check("a zero count is dropped, not rendered as x0",
+      #S.voyage_relics == 1 and S.voyage_relics[1] == "Sea Eye x3",
+      table.concat(S.voyage_relics, "|"))
+
 -- ---- vboons ----------------------------------------------------------------
 -- GMCP sends the flags; MIP sent the finished sentence. The phrasing is a
 -- fixed contract transcribed from the mudlib's own serializer, so it is
@@ -273,14 +289,6 @@ check("a record-only delta leaves the rows standing",
       S.voyage_chart_width == 6 and S.voyage_chart_mode == "raid"
       and #S.voyage_chart_rows == 3)
 
-
--- ---- vrelics stays on MIP --------------------------------------------------
--- Not mapped, so it is counted rather than routed. Converting it would render
--- raw relic ids where MIP resolved display names.
-local before = protocol.gmcp_stats().unknown["vrelics"] or 0
-voy({ vrelics = { sea_charm = 2 } })
-check("vrelics is counted, not applied",
-      (protocol.gmcp_stats().unknown["vrelics"] or 0) > before)
 
 -- ---- envelope --------------------------------------------------------------
 protocol.on_gmcp("Guild.Voyage", { guild = "berserker", vspoils = 999 })

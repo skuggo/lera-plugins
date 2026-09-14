@@ -74,20 +74,8 @@ local voyage = require("handlers.voyage")
 -- Mirrors init.lua's RESERVED set: everything in a handler module that is not
 -- one of the module-level conventions is an exact MIP key.
 local RESERVED = RESERVED_KEYS
-for key, fn in pairs(voyage) do
-  if not RESERVED[key] then protocol.handler(key, fn) end
-end
-for _, p in ipairs(voyage._patterns or {}) do
-  protocol.pattern_handler(p.pattern, p.fn)
-end
 for key, fn in pairs(voyage._gmcp or {}) do
   protocol.gmcp_handler(key, fn)
-end
-for _, k in ipairs(voyage._retired_keys or {}) do
-  protocol.retired_key(k)
-end
-for _, pat in ipairs(voyage._retired_patterns or {}) do
-  protocol.retired_pattern(pat)
 end
 
 
@@ -253,45 +241,6 @@ map_frame({ w = 3, h = 1, enc = { terrain = "b4" },
             terrain = { pack_row({ 1, 1, 0 }, 4) } })
 check("a packed plane with no legend empties rather than guessing glyphs",
       S.vmap_rows[1] == "", tostring(S.vmap_rows[1]))
-
--- MIP's map keys are still sent by the server and are deliberately inert.
--- They are registered rather than left unknown so /vik status's unknown list
--- keeps meaning "keys nobody has taught this client about".
-map_frame({ w = 4, h = 2, enc = GLYPH_ENC, legend = TERRAIN_LEGEND,
-            terrain = { "pppp", "ffff" }, pos = { x = 1, y = 1 } })
-local before = protocol.stats().unknown["VMAPH"]
-protocol.ingest("VMAPH", "9|9|0|0|1")
-protocol.ingest("VMAPL", "town|Ignored|0|0|")
-protocol.ingest("VMAPL_END", "1")
-protocol.ingest("VMR00", "XXXX")
-protocol.ingest("MEE00", "111")
-protocol.ingest("MES00", "000")
-check("the MIP map keys leave the GMCP map untouched",
-      S.vmap_w == 4 and S.vmap_rows[1] == "pppp" and S.vmap_px == 1
-      and S.vmap_east_edges[1] == nil,
-      tostring(S.vmap_w) .. "/" .. tostring(S.vmap_rows[1]) .. "/"
-        .. tostring(S.vmap_px) .. "/" .. tostring(S.vmap_east_edges[1]))
-check("the MIP map keys are not counted unknown",
-      protocol.stats().unknown["VMAPH"] == before
-      and protocol.stats().unknown["VMR00"] == nil)
-
--- Pattern-tier dispatch precedence and unknown-key accounting (using
--- synthetic keys -- not real LEGACY telemetry -- since none of this module's
--- registered patterns collide with each other or with any exact key).
-local precedence_calls = {}
-protocol.handler("ZQTEST01", function(v) precedence_calls[#precedence_calls + 1] = "exact:" .. v end)
-protocol.pattern_handler("^ZQTEST%d%d$",
-  function(k, v) precedence_calls[#precedence_calls + 1] = "pattern:" .. k .. ":" .. v end)
-protocol.ingest("ZQTEST01", "hello")
-check("exact beats pattern when both match", #precedence_calls == 1 and precedence_calls[1] == "exact:hello")
-protocol.ingest("ZQTEST02", "world")
-check("pattern still dispatches a key with no exact match",
-      #precedence_calls == 2 and precedence_calls[2] == "pattern:ZQTEST02:world")
-
-local unknown_before = protocol.stats().unknown.ZQNOPE or 0
-protocol.ingest("ZQNOPE", "x")
-check("unknown still counted when neither tier matches",
-      (protocol.stats().unknown.ZQNOPE or 0) == unknown_before + 1)
 
 if failures > 0 then os.exit(1) end
 print("ALL GUILD_VIKING GMCP MAP TESTS PASSED")

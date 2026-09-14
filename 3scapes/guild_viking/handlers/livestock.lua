@@ -6,7 +6,7 @@
 -- parser, whose local names differ (bid/qual/ster/yld are bldg/quality/
 -- sterile/yield on the wire).
 --
--- Display calls are deliberately absent: protocol.ingest already marks
+-- Display calls are deliberately absent: the protocol layer already marks
 -- ui.dirty().
 -- No MIP decoder in this file needs util.split: Guild.Livestock has no MIP
 -- predecessor in this plugin (see the ORDER-array comment near the bottom),

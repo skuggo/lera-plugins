@@ -133,7 +133,7 @@ function M.lines(width)
 
   local a = S.army
   if not a then
-    add(pagelib.trunc(C.dim .. "No army data -- run 'vtoggle mip_kingdom' (then varmy)" .. pagelib.RESET,
+    add(pagelib.trunc(C.dim .. "No army data yet -- run 'varmy' to populate it" .. pagelib.RESET,
       width))
     return lines
   end

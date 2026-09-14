@@ -1,11 +1,15 @@
--- GMCP payload key -> MIP handler key, and the shared MIP decoder.
+-- GMCP payload key -> the internal handler key it routes to.
+--
+-- The handler keys are still the uppercase spellings the MIP wire used. That
+-- is deliberate: they are load-bearing in every handler module and in the
+-- census, and renaming them buys nothing behavioural. The MIP wire decoder
+-- that used to live at the bottom of this file is gone with the transport.
 --
 -- The map is a table of explicit entries rather than a naming rule because
 -- three keys break the rule: `queue` is renamed, and MONUMENTS and SROLES are
 -- each split across two GMCP keys. Everything else is the uppercase of its
 -- GMCP key, listed anyway so an unrecognized key is unmapped by construction
 -- and therefore counted rather than routed somewhere plausible.
-local util = require("util")
 
 local M = {}
 
@@ -55,6 +59,10 @@ M.COMPOSITE = {
   -- record and sends each as its own key -- per ship, keyed by `id`. voffers
   -- likewise splits the ship name off the offer list MIP packed together.
   VOYAGE    = { "voyage", "voyage_crew_traits", "voyage_ship_traits" },
+  -- vrelics travels as raw relic ids; the display names the Sea popup renders
+  -- arrive beside it in vrelic_names, keyed by those same ids. Composite so
+  -- one writer sees whichever halves a delta frame carried.
+  VRELICS   = { "vrelics", "vrelic_names" },
   LONGSHIP  = { "longship", "longship_crew_traits", "longship_ship_traits" },
   VOFFERS   = { "voffers", "voffers_ship" },
   -- The Sea Chart: a width/height/mode record plus its rows, which a record
@@ -212,10 +220,9 @@ local MAP = {
   tgoods_9 = "TGOODS", tgoods_10 = "TGOODS", tgoods_11 = "TGOODS",
   tgoods_12 = "TGOODS", tgoods_13 = "TGOODS", tgoods_14 = "TGOODS",
 
-  -- Guild.Voyage. vrelics is deliberately absent: GMCP carries relic IDs and
-  -- the display-name lookup is server-side logic the mudlib keeps in the MIP
-  -- serializer alone, so consuming it here would render raw ids. It stays on
-  -- MIP until the payload carries names.
+  -- Guild.Voyage. vrelics used to sit out here, because GMCP carried relic ids
+  -- and only the MIP serializer knew their display names. The payload carries
+  -- the names now, in vrelic_names, so it is a composite like the rest.
   voyage = "VOYAGE", voyage_crew_traits = "VOYAGE", voyage_ship_traits = "VOYAGE",
   longship = "LONGSHIP", longship_crew_traits = "LONGSHIP",
   longship_ship_traits = "LONGSHIP",
@@ -224,6 +231,7 @@ local MAP = {
   voyage_wait = "VOYAGE_WAIT", vresolve = "VRESOLVE", vqpath = "VQPATH",
   vsaga = "VSAGA", vmem = "VMEM", vcurios = "VCURIOS", vgoods = "VGOODS",
   vaids = "VAIDS", vrunes = "VRUNES", vboons = "VBOONS", vsailed = "VSAILED",
+  vrelics = "VRELICS", vrelic_names = "VRELICS",
   vspoils = "VSPOILS", vreagent = "VREAGENT", fleet_renown = "FLEET_RENOWN",
 
   -- Guild.Fleet
@@ -259,33 +267,6 @@ local MAP = {
 
 function M.mip_key(gmcp_key)
   return MAP[tostring(gmcp_key)]
-end
-
--- Decode MIP's wire form against a declared key order: records joined with
--- ";", fields with "|". This mirrors the server's _v_join(records, order),
--- which is what produces the string, so one decoder covers every key whose
--- MIP encoder is _v_join. A flat key is a one-record list.
---
--- A trailing ";" or a doubled ";;" makes util.split(val, ";") yield an empty
--- chunk -- unlike LEGACY's own val:gmatch("[^;]+"), which never produced one.
--- An empty chunk is skipped so it doesn't become a phantom empty record
--- (e.g. a trailing ";" on a SEVENTS/SPROJ value must not insert a blank
--- card). This is a record-level check only: an empty *field* within a real
--- chunk -- "1||" is one record with two empty fields -- is untouched.
-function M.zip(order, val)
-  local out = {}
-  if type(val) ~= "string" or val == "" then return out end
-  for _, chunk in ipairs(util.split(val, ";")) do
-    if chunk ~= "" then
-      local fields = util.split(chunk, "|")
-      local rec = {}
-      for i, name in ipairs(order) do
-        rec[name] = fields[i] or ""
-      end
-      out[#out + 1] = rec
-    end
-  end
-  return out
 end
 
 return M

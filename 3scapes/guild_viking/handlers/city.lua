@@ -3,7 +3,7 @@
 -- 3s_scripts_old, read-only reference). Each parser body transcribes its
 -- LEGACY `elseif key == "..."` branch: string.split -> util.split,
 -- state. -> S. (module-local alias). Display calls (viking_window.*,
--- ColourNote) are dropped -- protocol.ingest already marks ui.dirty();
+-- ColourNote) are dropped -- the protocol layer already marks ui.dirty();
 -- parsers never do.
 local S = require("state").S
 local util = require("util")
@@ -25,7 +25,6 @@ local function write_settlers(r)
   S.city_fert    = tonumber(r.fert)     or 0
 end
 
-local SETTLERS_ORDER = { "settlers", "mood", "tax_rate", "water", "fert" }
 
 -- LEGACY 1765
 -- The GMCP record shape is canonical here too: a full 24-field record. LEGACY
@@ -279,22 +278,9 @@ local function write_sevents(recs)
   end
 end
 
--- Pattern-dispatched key (LEGACY matches this with key:match(...) rather
--- than an exact elseif branch). Registered by init.lua via
--- protocol.pattern_handler, not protocol.handler -- fn receives the key
--- itself (to extract the embedded row index) as well as the value.
-
--- The city plan's terrain rows arrived as a numbered CPT%02d burst over MIP;
--- Guild.City carries the whole plan in one frame. See M._retired_keys above
--- for what declaring a retired key buys.
-M._retired_patterns = { "^CPT%d%d$" }
-
-M._retired_keys = { "CPLAN", "CPP", "CPB", "CPU", "CPEND", "GOD_ACTIVE",
-                    "GOD_NEXT", "GOD_POWER_FOCUS", "GOD_POWER_NEXT" }
-
--- GMCP-side writers, keyed by MIP key. init.lua registers these into the GMCP
--- registry; `_gmcp` joins the `_patterns` / `_market_seam` convention of keys
--- the MIP registration loop skips.
+-- GMCP-side writers. init.lua registers every entry here; the key is the
+-- panel's internal name, which is still the uppercase spelling MIP used
+-- (see protocol.lua's header for why those names stayed).
 
 -- Guild.Fleet: pending ship upgrades. The record is {name, tier, secs, mats,
 -- done, detail}; `detail` is the one field that is not a scalar, a

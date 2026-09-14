@@ -360,140 +360,27 @@ local function seed_ships(str)
 end
 
 local seen = {}
-protocol.handler("TESTKEY", function(v) seen[#seen + 1] = v end)
-check("duplicate handler rejected", not pcall(protocol.handler, "TESTKEY", function() end))
 
-local before_dirty = dirty_count
-protocol.ingest("TESTKEY", "abc")
-check("ingest dispatches", seen[1] == "abc")
-check("ingest marks dirty", dirty_count > before_dirty)
-
-protocol.ingest("NOSUCH", "x")
-check("unknown counted", protocol.stats().unknown.NOSUCH == 1)
-
--- pattern tier: registration, dispatch (fn receives key AND value), and
--- duplicate-pattern rejection. Exact-vs-pattern precedence and the row-key
--- LEGACY cases live in guild_viking_voyage_test.lua alongside the handlers
--- that actually use this tier.
-local pattern_seen = {}
-protocol.pattern_handler("^PATKEY%d%d$", function(k, v) pattern_seen[#pattern_seen + 1] = k .. ":" .. v end)
-check("duplicate pattern rejected", not pcall(protocol.pattern_handler, "^PATKEY%d%d$", function() end))
-protocol.ingest("PATKEY07", "seven")
-check("pattern dispatches with key and value", pattern_seen[1] == "PATKEY07:seven")
-
--- erroring parser: counted, does not break later ingest
-protocol.handler("BOOMKEY", function() error("boom") end)
-protocol.ingest("BOOMKEY", "x")
-protocol.ingest("TESTKEY", "after")
-check("parser error counted", protocol.stats().errors.BOOMKEY == 1)
-check("dispatch survives parser error", seen[#seen] == "after")
-
--- BBE adapter: plain pairs
-seen = {}
-protocol.on_bbe("TESTKEY^^one^^TESTKEY^^two^^")
-check("bbe splits pairs", #seen == 2 and seen[1] == "one" and seen[2] == "two")
-
--- KEY_NofTOTAL: instant reassembly on completion, in numeric order
-seen = {}
-protocol.on_bbe("TESTKEY_2of2^^beta^^")
-check("incomplete batch held", #seen == 0 and protocol.stats().batches_pending == 1)
-protocol.on_bbe("TESTKEY_1of2^^alpha^^")
-check("batch reassembled in order", #seen == 1 and seen[1] == "alphabeta")
-check("batch cleared", protocol.stats().batches_pending == 0)
-
--- legacy KEY_N (no total): only the sweep dispatches it
-seen = {}
-protocol.on_bbe("TESTKEY_1^^a^^TESTKEY_2^^b^^")
-check("numbered-without-total held", #seen == 0)
-protocol.sweep(1000)   -- first sight: records timestamp, dispatches complete run
-check("sweep dispatches contiguous run", #seen == 1 and seen[1] == "ab")
-
--- stale partial: dropped after 2s
-seen = {}
-protocol.on_bbe("TESTKEY_2of3^^x^^")
-protocol.sweep(1000)
-check("partial survives young sweep", protocol.stats().batches_pending == 1)
-protocol.sweep(1003)
-check("stale partial dropped", protocol.stats().batches_pending == 0 and #seen == 0)
-
--- Source selection: on_bbe's mip/gmcp gate is unaffected by Task 1's
--- rewrite of on_gmcp -- that gate only ever governed the old ^^-delimited
--- string mirror, which never existed for real (guild_viking_gmcp_test.lua's
--- header explains why). The GMCP path now dispatches Guild.* table frames
--- directly through protocol.on_gmcp/apply_gmcp_key, entirely independent of
--- source_mode; there is no wholesale latch to assert here any more (Task 3
--- adds the real per-key latch, with its own suite).
-check("source default auto", protocol.source() == "auto")
-
-protocol.source("mip")
-seen = {}
-protocol.on_bbe("TESTKEY^^mipforced^^")
-check("forced mip lets mip through", seen[#seen] == "mipforced")
-protocol.source("auto")
-
--- Forced gmcp direction still suppresses BBE unconditionally.
-protocol.source("gmcp")
-seen = {}
-local suppressed_before_forced = protocol.stats().suppressed
-protocol.on_bbe("TESTKEY^^shouldnotarrive^^")
-check("forced gmcp suppresses bbe", #seen == 0
-      and protocol.stats().suppressed == suppressed_before_forced + 1)
-protocol.source("mip")
-protocol.source("auto")
-
--- A Guild.* GMCP frame reaches its registered writer while mip keeps flowing,
--- untouched, for a key GMCP has not fed -- the two transports coexist with no
--- source-selection gate between them.
+-- A Guild.* GMCP frame reaches its registered writer, and the key it fed is
+-- latched.
 --
 -- Observed through a REAL writer's effect on state rather than a probe
 -- registered here. Earlier revisions of this case each picked a key that had
 -- no _gmcp writer yet and registered their own; every one of them broke as
 -- soon as that key gained a real writer and the duplicate-key guard fired
--- (SETTLERS, then RBUILD, then CARTS). Since the migration is converting every
--- mapped key, "a key with no writer" is a shrinking set with no members at the
--- end of it -- so this asks the production path for its own observable answer
--- instead. BLOCKS is a plain good -> amount lookup, which makes the assertion
--- a value comparison rather than a shape one.
+-- (SETTLERS, then RBUILD, then CARTS). BLOCKS is a plain good -> amount
+-- lookup, which makes the assertion a value comparison rather than a shape
+-- one.
 protocol.on_gmcp("Guild.Trade",
   { guild = "viking", blocks = { { good = "gmcprouted", amount = 7 } } })
 check("guild frame routes to its registered writer", S.blocks.gmcprouted == 7)
 check("the fed key is latched", protocol.gmcp_keys().BLOCKS == true)
-seen = {}
-protocol.on_bbe("TESTKEY^^stillmip^^")
-check("mip still flows for a key gmcp has not fed", seen[1] == "stillmip")
 
--- Kills: a global latch, or a latch that only exists at the frame level rather
--- than per key -- once BLOCKS is fed, an arriving BLOCKS must be suppressed
--- while TESTKEY (never fed by gmcp) keeps flowing above. The suppression
--- happens before any handler lookup, which is why it still reads the same way
--- now that BLOCKS has no MIP handler left to suppress: the latch is about the
--- key, not about what would have consumed it.
-local suppressed_before_latch = protocol.stats().suppressed
-protocol.ingest("BLOCKS", "should-be-suppressed")
-check("a latched key suppresses its own mip twin",
-      protocol.stats().suppressed == suppressed_before_latch + 1)
-
--- LEGACY quirk, ported faithfully (guild_viking.lua:2932-2942, "dispatch
--- whatever we have after the grace period, as before"): a lone non-contiguous
--- no-total part dispatches unconditionally on the first sweep, joined from
--- whatever parts exist -- there is no contiguity gate here. Do not "fix"
--- this into a contiguous-from-1 check; the tests below encode the intended,
--- LEGACY-matching behavior.
-seen = {}
-protocol.on_bbe("TESTKEY_2^^orphan^^")   -- part 1 never arrives
-protocol.sweep(1000)
-check("non-contiguous no-total part still dispatches", #seen == 1 and seen[1] == "orphan")
-
--- ---- init.lua wiring: mip "BBE" and gmcp "Guild" reach protocol correctly --
--- M.on_load() registers the real mip/gmcp/timer callbacks used at runtime.
+-- ---- init.lua wiring: gmcp "Guild" reaches protocol correctly --------------
+-- M.on_load() registers the real gmcp/timer callbacks used at runtime.
 -- It must only run once in this suite -- later /vik command tests (task 10)
 -- rely on it having already run and must not call it again.
 M.on_load()
-
-seen = {}
-mip.fire("BBE", "TESTKEY^^wired^^")
-check("mip BBE wiring feeds the payload, not the packet sequence number",
-      seen[#seen] == "wired")
 
 -- What is under test here is the gmcp.on("Guild", ...) subscription reaching
 -- protocol.on_gmcp at all, so it is asserted the same way as above: through a
@@ -502,42 +389,6 @@ check("mip BBE wiring feeds the payload, not the packet sequence number",
 gmcp.fire("Guild", { guild = "viking",
                      blocks = { { good = "gmcpwired", amount = 3 } } })
 check("gmcp Guild wiring feeds protocol.on_gmcp", S.blocks.gmcpwired == 3)
-
--- Regression: protocol.sweep()'s grace period is in SECONDS, and lera.time()
--- already returns epoch seconds (src/lua/api_lera.c), so init.lua must pass it
--- through unscaled. It used to divide by 1000 -- on the false premise, taken
--- from a wrong lera.time() help string, that the API returned milliseconds --
--- which turned LEGACY's intended ~2s grace into ~2000s, so an incomplete
--- known-total batch was effectively never dropped. Drive the captured sweep
--- callback directly (it takes no arguments -- it reads lera.time() itself,
--- exactly as init.lua wires it), moving the stubbed clock in whole seconds.
-local sweep_reg
-for _, r in ipairs(timer_regs) do
-  if r.interval == 100 then sweep_reg = r end
-end
-check("sweep timer registered at 100ms", sweep_reg ~= nil)
-
-local real_lera_time = lera.time
-protocol.source("mip")   -- force mip: an earlier test in this file may have left source("gmcp")
-seen = {}
-lera.time = function() return 100000 end          -- simulated wall clock: t = 100000s
-protocol.on_bbe("TESTKEY_2of3^^x^^")               -- incomplete known-total batch arrives
-sweep_reg.fn()
-check("fresh known-total batch survives first sweep", protocol.stats().batches_pending == 1)
-lera.time = function() return 100001 end          -- +1s of real time, inside the grace
-sweep_reg.fn()
-check("known-total batch NOT dropped after 1s of real time",
-      protocol.stats().batches_pending == 1 and #seen == 0)
-lera.time = function() return 100003 end          -- +3s of real time, past the 2s grace
-sweep_reg.fn()
-check("known-total batch dropped after >2s of real time",
-      protocol.stats().batches_pending == 0 and #seen == 0)
-lera.time = real_lera_time
-protocol.source("auto")
-
--- Restore a clean, unlatched source state for later test files.
-protocol.source("mip")
-protocol.source("auto")
 
 -- ---- notify: push triggers + countdown_tick (Task 9) -----------------------
 local notify = require("notify")
@@ -791,7 +642,6 @@ local page_opts = require("page_opts")
 local window = require("window")
 
 S.price_history = { [1] = { fish = { { t = 100, b = 2, s = 3 } } } }
-protocol.source("gmcp")
 -- Task 2 extension: flip a page option and switch pages before saving, so
 -- the round-trip below also covers persist's new page_opts/page fields
 -- (mirrors LEGACY's SetVariable("popt_"..k) + SetVariable("page", ...)).
@@ -799,16 +649,12 @@ page_opts.set("show_stats_buffs", false)
 window.set_page("goods")
 persist.save()
 S.price_history = {}
-protocol.source("auto")
 page_opts.set("show_stats_buffs", true)   -- flip back so load is what restores it
 window.set_page("stats")
 persist.load()
 check("history restored", S.price_history[1] and S.price_history[1].fish[1].b == 2)
-check("source restored", protocol.source() == "gmcp")
 check("page_opts restored", page_opts.get("show_stats_buffs") == false)
 check("page restored", window.current_page() == "goods")
-protocol.source("mip")
-protocol.source("auto")
 page_opts.set("show_stats_buffs", true)
 window.set_page("stats")
 
@@ -870,13 +716,13 @@ check("vik accepts args", registered_vik.accepts_args == true)
 local ok_status = pcall(registered_vik.handler, "status", "/vik")
 check("vik status dispatches without error", ok_status)
 
-registered_vik.handler("source gmcp", "/vik")
-check("source set via command", protocol.source() == "gmcp")
-registered_vik.handler("source auto", "/vik")
-check("source reset via command", protocol.source() == "auto")
-
-local ok_badsource = pcall(registered_vik.handler, "source bogus", "/vik")
-check("vik source with bad mode does not error", ok_badsource and protocol.source() == "auto")
+-- /vik source is a read now: whatever follows it, it reports the GMCP feed
+-- rather than selecting a transport, and it must not error on the old
+-- arguments someone's muscle memory still types.
+local ok_source = pcall(registered_vik.handler, "source", "/vik")
+check("vik source dispatches without error", ok_source)
+local ok_oldsource = pcall(registered_vik.handler, "source mip", "/vik")
+check("vik source with a retired argument does not error", ok_oldsource)
 
 local ok_empty = pcall(registered_vik.handler, "", "/vik")
 check("vik empty args falls back to usage without error", ok_empty)
@@ -944,8 +790,12 @@ check("resetvikxp alias resets sessions", S.vis_session == 0)
 check("trace off by default", protocol.trace() == false)
 registered_vik.handler("trace on", "/vik")
 check("trace on via /vik", protocol.trace() == true)
-local ok_trace_ingest = pcall(protocol.ingest, "TESTKEY", "traced")
-check("ingest with trace on does not error", ok_trace_ingest)
+-- Tracing prints a line per routed key, so a frame under trace must still
+-- apply normally rather than erroring inside the trace print.
+local ok_trace_frame = pcall(protocol.on_gmcp, "Guild.Trade",
+  { guild = "viking", blocks = { { good = "traced", amount = 1 } } })
+check("a frame with trace on applies without error",
+      ok_trace_frame and S.blocks.traced == 1)
 registered_vik.handler("trace off", "/vik")
 check("trace off via /vik", protocol.trace() == false)
 
@@ -1865,12 +1715,13 @@ page_opts.set("gag_status_lines", true)   -- restore the shared instance's defau
 local cancels_before_unload = #timer_cancels
 local ok_unload, unload_err = pcall(M.on_unload)
 check("on_unload does not error", ok_unload, unload_err)
--- on_unload cancels the sweep and countdown timers. Asserting the count is what
--- proves on_unload ran to completion rather than aborting early: every teardown
--- step after the timer cancels (combat triggers, notify triggers, the /vik
--- command registration) is silent, so "did not error" alone cannot see it.
-check("on_unload cancelled both of its timers",
-      #timer_cancels - cancels_before_unload == 2,
+-- on_unload cancels the countdown timer -- the only one left since the MIP
+-- batch sweep went. Asserting the count is what proves on_unload ran to
+-- completion rather than aborting early: every teardown step after it
+-- (combat triggers, notify triggers, the /vik command registration) is
+-- silent, so "did not error" alone cannot see it.
+check("on_unload cancelled its timer",
+      #timer_cancels - cancels_before_unload == 1,
       #timer_cancels - cancels_before_unload)
 
 if failures > 0 then os.exit(1) end

@@ -89,8 +89,10 @@ local nodata_lines = goods_page.lines(WIDTH)
 local nodata_all = joined(nodata_lines)
 check("goods: 'Trade Goods' no-data header present when trade_goods is empty",
       find_line(nodata_lines, "Trade Goods") ~= nil, nodata_all)
-check("goods: no-data message names the toggle",
-      nodata_all:find("vtoggle mip_trade_goods", 1, true) ~= nil, nodata_all)
+-- The empty state no longer names a toggle to enable: prices arrive with the
+-- guild's own reports, so the message says "not yet", not "switch this on".
+check("goods: no-data message says the prices have not arrived yet",
+      nodata_all:find("town prices arrive", 1, true) ~= nil, nodata_all)
 check("goods: Market Movers is skipped entirely when trade_goods is empty",
       find_line(nodata_lines, "Market Movers") == nil, nodata_all)
 check("goods: demand cycle line still renders before the no-data exit",
@@ -302,8 +304,8 @@ S.army = nil
 local no_army_lines = army_page.lines(WIDTH)
 check("army: 'No army data' fallback when state.army is nil",
       find_line(no_army_lines, "No army data") ~= nil, joined(no_army_lines))
-check("army: no-army fallback names the toggle",
-      joined(no_army_lines):find("vtoggle mip_kingdom", 1, true) ~= nil, joined(no_army_lines))
+check("army: no-army fallback names the command that populates it",
+      joined(no_army_lines):find("run 'varmy'", 1, true) ~= nil, joined(no_army_lines))
 
 -- ---- Levy + Units (13313-13350) ---------------------------------------------
 S.army = {

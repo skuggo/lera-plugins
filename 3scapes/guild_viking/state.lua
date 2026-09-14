@@ -68,7 +68,6 @@ local state = {
   ships      = {},   -- { name, tier, state, target, return_in, ship_id, crew }
   wstock     = {},   -- { good, amount, freshness_pct }
   wh_cap     = nil,  -- real warehouse capacity incl. steward/lager/star bonuses
-  cellar     = {},   -- { stock, cap, tier, lots={{qty, pct}, ...} }
   market_orders = {},  -- { id, buyer, good, remaining, price, age_secs }
   vfind = { tier = 0, postings = {}, offers = {}, auctions = {} },
   incoming_fills = {},  -- { good, seller, amount, arrives_in }
@@ -212,7 +211,8 @@ local state = {
   voyage_goods = {},
   voyage_aids = {},
   voyage_runes = {},
-  voyage_relics = {},
+  voyage_relics = {},        -- rendered "Name xN" strings
+  voyage_relic_names = {},  -- relic id -> display name, from Guild.Voyage
   voyage_curios = {},
   voyage_reagents = 0,  -- Nikr's Bile phials secured this voyage (VREAGENT)
   -- Territory map (from send_mip_map / vtoggle mip_map)

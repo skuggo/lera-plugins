@@ -153,18 +153,11 @@ check("sibling key in the same frame still applied",
   got.SETTLERS ~= nil and got.SETTLERS.a == 2)
 
 -- Kills: latching a key on the mere fact that a writer was invoked, rather
--- than on the writer succeeding. Latch-on-success is the safety property of
--- the whole per-key design: a GMCP writer that raises has written nothing, so
--- suppressing that key's MIP twin would take the field dark for the rest of
--- the connection with no error the user can see on the page. Only the
--- unknown-key path was covered before; this is the raising-writer path.
+-- than on the writer succeeding. A writer that raises has written nothing, so
+-- counting its key as fed would make /vik status and the stats widget claim a
+-- panel is live when the page behind it is empty.
 check("raising gmcp writer does not latch its key",
   protocol.gmcp_keys().CIDLE == nil)
-local cidle_from_mip
-protocol.handler("CIDLE", function(val) cidle_from_mip = val end)
-protocol.ingest("CIDLE", "from-mip")
-check("the MIP twin of a raising gmcp writer is still accepted",
-  cidle_from_mip == "from-mip", tostring(cidle_from_mip))
 
 -- ---- paging ----------------------------------------------------------------
 -- Kills: applying each page independently. The server slices an oversized array
@@ -246,66 +239,27 @@ check("type mismatch counted malformed exactly once",
 check("sibling key in the same run still applied",
   got.SCONSUME == "ok", got.SCONSUME)
 
--- ---- per-key latch ---------------------------------------------------------
--- SETTLERS already has a gmcp_handler registered above (line 37); reused here
--- rather than re-registered, since protocol.gmcp_handler errors on a dup key.
-local ingested = {}
-protocol.handler("SETTLERS", function(val) ingested.SETTLERS = val end)
-protocol.handler("MIPONLY", function(val) ingested.MIPONLY = val end)
-
--- Kills: suppressing MIP wholesale once any GMCP frame arrives. Keys GMCP does
--- not push must keep flowing, or the voyage and war pages go dark.
+-- ---- key latch -------------------------------------------------------------
+-- Kills: latching a key that was never actually written. /vik status counts
+-- these and init.lua's has_data() gates the whole stats widget on there being
+-- at least one, so a key latched by an unknown-key frame would claim a panel
+-- is live with nothing behind it.
 reset()
-ingested = {}
-protocol.source("auto")
 frame("Guild.Settlement", { guild = "viking", settlers = { a = 1 } })
-protocol.ingest("SETTLERS", "from-mip")
-protocol.ingest("MIPONLY", "from-mip")
-check("latched key ignores MIP", ingested.SETTLERS == nil)
-check("unlatched sibling still accepts MIP", ingested.MIPONLY == "from-mip",
-  tostring(ingested.MIPONLY))
-check("latched key listed", protocol.gmcp_keys().SETTLERS == true)
-check("unlatched key not listed", protocol.gmcp_keys().MIPONLY == nil)
-
--- Kills: latching before a writer ran. A key counted unknown has not been fed
--- by GMCP and must not suppress its MIP twin.
+check("a written key is latched", protocol.gmcp_keys().SETTLERS == true)
 reset()
-ingested = {}
 frame("Guild.Settlement", { guild = "viking", nosuchkey = { a = 1 } })
-protocol.ingest("MIPONLY", "from-mip")
 check("unknown gmcp key does not latch", protocol.gmcp_keys().NOSUCHKEY == nil)
-check("unknown gmcp key does not suppress MIP", ingested.MIPONLY == "from-mip")
-
--- ---- source_mode overrides -------------------------------------------------
--- Kills: honouring GMCP frames under `source mip`, which is the override you
--- reach for precisely to rule GMCP out while debugging.
-reset()
-ingested = {}
-protocol.source("mip")
-frame("Guild.Settlement", { guild = "viking", settlers = { a = 1 } })
-check("source mip drops gmcp frames", got.SETTLERS == nil)
-protocol.ingest("SETTLERS", "from-mip")
-check("source mip keeps MIP flowing", ingested.SETTLERS == "from-mip",
-  tostring(ingested.SETTLERS))
-
--- Kills: `source gmcp` still letting an unlatched MIP key through.
-reset()
-ingested = {}
-protocol.source("gmcp")
-protocol.ingest("MIPONLY", "from-mip")
-check("source gmcp suppresses every MIP key", ingested.MIPONLY == nil)
-protocol.source("auto")
+check("unknown gmcp key latches nothing at all", next(protocol.gmcp_keys()) == nil)
 
 -- ---- reset -----------------------------------------------------------------
--- Kills: a latch surviving a disconnect. The next session may not negotiate
--- GMCP at all, and a stale latch would silence MIP forever.
+-- Kills: a latch surviving a disconnect. The next session may never push that
+-- panel, and a stale latch would report it as live for the whole connection.
 reset()
-ingested = {}
 frame("Guild.Settlement", { guild = "viking", settlers = { a = 1 } })
+check("latched before the disconnect", protocol.gmcp_keys().SETTLERS == true)
 protocol.reset_connection()
-protocol.ingest("SETTLERS", "from-mip")
-check("latch clears on disconnect", ingested.SETTLERS == "from-mip",
-  tostring(ingested.SETTLERS))
+check("latch clears on disconnect", next(protocol.gmcp_keys()) == nil)
 
 -- ---- key map ---------------------------------------------------------------
 local gmcp_map = require("gmcp_map")
@@ -338,281 +292,6 @@ end
 
 -- ---- shared decoder --------------------------------------------------------
 -- Kills: a decoder that returns fields positionally instead of named, which
--- would make the MIP and GMCP paths disagree on shape.
-local recs = gmcp_map.zip({ "a", "b", "c" }, "1|2|3")
-check("zip one record", #recs == 1 and recs[1].a == "1" and recs[1].c == "3",
-  #recs)
-
--- Kills: treating the whole value as one record. `;` separates records.
-recs = gmcp_map.zip({ "a", "b" }, "1|2;3|4")
-check("zip record list", #recs == 2 and recs[2].a == "3" and recs[2].b == "4",
-  #recs)
-
--- Kills: dropping a trailing empty field. MIP sends empty strings for absent
--- values, and a writer's `tonumber(x) or 0` depends on the field being present.
-recs = gmcp_map.zip({ "a", "b", "c" }, "1||")
-check("zip keeps empty fields",
-  #recs == 1 and recs[1].b == "" and recs[1].c == "", recs[1] and recs[1].c)
-
--- Kills: an empty value producing a phantom record.
-check("zip of empty string is empty", #gmcp_map.zip({ "a" }, "") == 0)
-
--- Kills: a trailing ";" producing a phantom empty-record, distinct from an
--- entirely empty value above. util.split(";"-separated) preserves a trailing
--- empty chunk; a record list decoder must drop it, the same way LEGACY's
--- val:gmatch("[^;]+") never yielded one.
-recs = gmcp_map.zip({ "a", "b" }, "1|2;")
-check("zip drops a phantom record from a trailing ';'", #recs == 1 and recs[1].a == "1",
-  #recs)
-
--- Kills: a doubled ";;" mid-string producing a phantom empty-record between
--- two real ones.
-recs = gmcp_map.zip({ "a", "b" }, "1|2;;3|4")
-check("zip drops a phantom record from a doubled ';;' mid-string",
-  #recs == 2 and recs[1].a == "1" and recs[2].a == "3", #recs)
-
--- Re-assertion: dropping empty *records* must not touch empty *fields* --
--- "1||" is one record with two empty fields, not a record to drop.
-recs = gmcp_map.zip({ "a", "b", "c" }, "1||")
-check("zip still keeps empty fields after the empty-record fix",
-  #recs == 1 and recs[1].b == "" and recs[1].c == "", recs[1] and recs[1].c)
-
--- ---- routing through the map -----------------------------------------------
--- Kills: apply_gmcp_key still uppercasing rather than consulting the map.
--- `queue` -> TQUEUE is the only key in the map whose MIP name is not simply its
--- own uppercase, so it is the one that can catch a derivation. It is also a
--- composite half now, so the writer receives the gathered table rather than the
--- value on its own -- which is what the second assertion pins.
-reset()
-protocol.gmcp_handler("TQUEUE", recorder("TQUEUE"))
-frame("Guild.Trade", { guild = "viking", queue = { a = 1 } })
-check("renamed key routes to its writer", got.TQUEUE ~= nil,
-  got.TQUEUE)
-check("a composite half arrives keyed by its own gmcp name",
-  got.TQUEUE ~= nil and got.TQUEUE.queue ~= nil and got.TQUEUE.queue.a == 1,
-  got.TQUEUE and got.TQUEUE.queue)
-
--- Kills: an unmapped key counted under its own name rather than being visible
--- as the GMCP key the guild actually sent.
-reset()
-frame("Guild.Trade", { guild = "viking", crpr = { a = 1 } })
-check("unmapped key counted by its gmcp name",
-  protocol.gmcp_stats().unknown.crpr == 1,
-  protocol.gmcp_stats().unknown.crpr)
-
--- ---- deterministic key order ----------------------------------------------
--- Kills: applying a frame's keys in pairs() order. pairs() follows the table's
--- internal hashing, not the frame, so two writers touching a common state
--- field land in an arbitrary order -- and since frames are deltas, either key
--- may also arrive alone. The symptom is a pane value flickering between two
--- answers with no underlying state change, which is close to undebuggable
--- from a bug report. That collision is designed out today (SETTLERX owns the
--- housing totals outright), but a later plan adds ~20 more keys, so the order
--- itself is pinned here.
---
--- The four keys below are real, mapped, otherwise-unused Guild.City keys,
--- chosen because LuaJIT's pairs() walks them raid, heat, bdmg, cdtime -- a
--- different order from the sorted MIP order this asserts, and from the order
--- they are written in the frame literal. Nothing about the frame can produce
--- BDMG, CDTIME, HEAT, RAID by accident.
-local applied_order = {}
-for _, k in ipairs({ "BDMG", "CDTIME", "HEAT", "RAID" }) do
-  protocol.gmcp_handler(k, function() applied_order[#applied_order + 1] = k end)
-end
-
-reset()
-applied_order = {}
-frame("Guild.City", { guild = "viking", raid = "1", heat = "2", bdmg = "3",
-                      cdtime = "4" })
-check("frame keys applied in a declared, stable order",
-  table.concat(applied_order, ",") == "BDMG,CDTIME,HEAT,RAID",
-  table.concat(applied_order, ","))
-
--- The de-paged branch rebuilds its own table (merge_page -> run.keys) before
--- applying, so it gets the same pin -- it is the call site most likely to rot.
-reset()
-applied_order = {}
-frame("Guild.City", { guild = "viking", page = 1, pages = 2,
-                      raid = "1", heat = "2" })
-frame("Guild.City", { guild = "viking", page = 2, pages = 2,
-                      bdmg = "3", cdtime = "4" })
-check("de-paged run applies keys in the same declared order",
-  table.concat(applied_order, ",") == "BDMG,CDTIME,HEAT,RAID",
-  table.concat(applied_order, ","))
-
--- ---- composite plumbing (SROLES: two GMCP keys, one MIP key) ---------------
--- Exercises apply_gmcp_frame/composite_of directly through protocol.on_gmcp,
--- rather than through city._gmcp.SROLES (which the settlement suite calls
--- directly, bypassing this plumbing entirely). Before this fix, both
--- on_gmcp branches called protocol.apply_gmcp_key once per GMCP key, and
--- apply_gmcp_key resolves "sroles" and "sroles_meta" to the SAME mip_key
--- (SROLES) -- so the writer would have been invoked twice, once per raw
--- half, never with a table carrying both `.sroles` and `.sroles_meta`.
-local sroles_calls = 0
-protocol.gmcp_handler("SROLES", function(rec)
-  sroles_calls = sroles_calls + 1
-  got.SROLES = rec
-end)
-
--- Kills: calling the writer once per GMCP key instead of gathering both
--- composite halves of one frame into a single call.
-reset()
-sroles_calls = 0
-frame("Guild.Settlement", { guild = "viking",
-  sroles = { { role = "smidir" } },
-  sroles_meta = { commoner = "5", identity = "X" } })
-check("composite frame with both halves reaches the writer exactly once",
-  sroles_calls == 1, sroles_calls)
-check("composite frame with both halves carries both keys in one call",
-  got.SROLES ~= nil and got.SROLES.sroles ~= nil and got.SROLES.sroles_meta ~= nil,
-  got.SROLES)
-
--- Kills: composite gathering requiring both halves to be present, silently
--- dropping (or erroring on) a delta frame that carries only one.
-reset()
-sroles_calls = 0
-frame("Guild.Settlement", { guild = "viking", sroles = { { role = "boendr" } } })
-check("delta frame with only sroles reaches the writer exactly once",
-  sroles_calls == 1, sroles_calls)
-check("delta frame with only sroles omits sroles_meta from the call",
-  got.SROLES ~= nil and got.SROLES.sroles ~= nil and got.SROLES.sroles_meta == nil,
-  got.SROLES)
-
--- Kills: the de-paged branch (merge_page -> run.keys, applied once page ==
--- pages) failing to gather composite halves the same way the unpaged branch
--- does -- this call site is the one most likely to rot, since nothing else
--- here exercises it.
-reset()
-sroles_calls = 0
-frame("Guild.Settlement", { guild = "viking", page = 1, pages = 2,
-                            sroles = { { role = "smidir" } } })
-check("paged run not applied before the final page", sroles_calls == 0, sroles_calls)
-frame("Guild.Settlement", { guild = "viking", page = 2, pages = 2,
-                            sroles_meta = { commoner = "9", identity = "Y" } })
-check("paged run gathers both halves into one call",
-  sroles_calls == 1, sroles_calls)
-check("paged run's single call carries both keys",
-  got.SROLES ~= nil and got.SROLES.sroles ~= nil and got.SROLES.sroles_meta ~= nil,
-  got.SROLES)
-
--- Kills: a composite key with no registered writer (MONUMENTS, pending a
--- later plan) raising instead of being counted like any other unknown key.
-reset()
-local ok, err = pcall(frame, "Guild.City", { guild = "viking",
-  monuments_cap = "3", monuments_list = { "a", "b" } })
-check("composite key with no writer does not raise", ok, err)
-check("composite key with no writer is counted unknown",
-  protocol.gmcp_stats().unknown.MONUMENTS == 1,
-  protocol.gmcp_stats().unknown.MONUMENTS)
-
--- ---- Guild.State's vitals all resolve to one writer -----------------------
--- Kills: routing a vitals group anywhere but VITALS -- to its own writer, or
--- to a second one. The whole block has to reach ONE writer: they share the
--- S.vitals_gmcp latch and the "absent means unchanged" handling, and a delta
--- frame can carry any subset of them.
-for _, k in ipairs({ "hp", "sp", "points", "chain", "gxp", "tox", "fx",
-                     "encounter", "target", "ledung", "bars" }) do
-  check("Guild.State " .. k .. " routes to VITALS", gmcp_map.mip_key(k) == "VITALS",
-    tostring(gmcp_map.mip_key(k)))
-end
-
--- Char.Combat keeps the attacker fields. It carries the enemy hp percent that
--- Guild.State's target group omits, so it stays the source for those three --
--- and the two writers must not land on a shared field. `target`/`encounter`
--- write en5/ens/rndz/combat; Char.Combat writes mob_name_full/estatus_pct/
--- combat_rounds. Disjoint, and this is the check that keeps them so.
-do
-  local combat = require("combat")
-  local S2 = require("state").S
-  S2.mob_name_full, S2.estatus_pct, S2.combat_rounds = "SENTINEL", 4242, 4242
-  frame("Guild.State", { guild = "viking",
-                         target = { name = "Ice Troll", name5 = "Ice T",
-                                    hp_status = "low" },
-                         encounter = { active = 1, rounds = 3 } })
-  check("a Guild.State frame does not touch Char.Combat's attacker fields",
-    S2.mob_name_full == "SENTINEL" and S2.estatus_pct == 4242
-      and S2.combat_rounds == 4242,
-    S2.mob_name_full .. "/" .. S2.estatus_pct .. "/" .. S2.combat_rounds)
-
-  S2.en5, S2.ens, S2.rndz = "SENTINEL", "SENTINEL", 4242
-  combat.on_gmcp_combat({ attacker = "Ice Troll", attacker_hp = 40, rounds = 9 })
-  check("a Char.Combat frame does not touch the vitals writer's target fields",
-    S2.en5 == "SENTINEL" and S2.ens == "SENTINEL" and S2.rndz == 4242,
-    S2.en5 .. "/" .. S2.ens .. "/" .. S2.rndz)
-end
-
--- ---- the `full` envelope flag reaches writers ------------------------------
--- The protocol layer strips `full` as an envelope member, so before this it
--- was consumed and thrown away. A writer that MERGES a variable-arity key set
--- (handlers/livestock.lua's write_lmarket) cannot evict a key the server has
--- stopped sending without knowing that this push was a full resend rather
--- than a delta: on a shrinking key set the server sets `full: 1` and repeats
--- the COMPLETE current key set, so absence in that frame is the eviction
--- signal. Each writer now receives it as a second argument.
-local full_seen = {}
-protocol.gmcp_handler("LNEEDS", function(v, full) full_seen.LNEEDS = { v = v, full = full } end)
-protocol.gmcp_handler("LMARKET", function(v, full) full_seen.LMARKET = { v = v, full = full } end)
-
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking", full = 1,
-                           lneeds = { { species = "sheep" } } })
-check("a full frame reaches a single-key writer as full = true",
-      full_seen.LNEEDS and full_seen.LNEEDS.full == true,
-      full_seen.LNEEDS and tostring(full_seen.LNEEDS.full))
-
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking",
-                           lneeds = { { species = "sheep" } } })
-check("a delta frame reaches a single-key writer as full = false",
-      full_seen.LNEEDS and full_seen.LNEEDS.full == false,
-      full_seen.LNEEDS and tostring(full_seen.LNEEDS.full))
-
--- The composite path is the one that matters for lmarket: its writer is
--- invoked once with the gathered halves, not once per GMCP key.
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking", full = 1,
-                           lmarket_1 = { { lin = 1 } } })
-check("a full frame reaches a COMPOSITE writer as full = true",
-      full_seen.LMARKET and full_seen.LMARKET.full == true,
-      full_seen.LMARKET and tostring(full_seen.LMARKET.full))
-
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking", lmarket_1 = { { lin = 1 } } })
-check("a delta frame reaches a COMPOSITE writer as full = false",
-      full_seen.LMARKET and full_seen.LMARKET.full == false,
-      full_seen.LMARKET and tostring(full_seen.LMARKET.full))
-
--- A paged push repeats `full` identically on every page (gmcp.h's PAGING
--- note), and merge_page strips it with the rest of the envelope -- so the run
--- has to carry it to the writer that fires when the last page lands.
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking", full = 1, page = 1, pages = 2,
-                           lmarket_1 = { { lin = 1 } } })
-check("no writer fires mid-run", full_seen.LMARKET == nil)
-frame("Guild.Livestock", { guild = "viking", full = 1, page = 2, pages = 2,
-                           lmarket_2 = { { lin = 2 } } })
-check("a paged full push reaches the writer as full = true",
-      full_seen.LMARKET and full_seen.LMARKET.full == true,
-      full_seen.LMARKET and tostring(full_seen.LMARKET.full))
-check("a paged full push still delivers every page's keys",
-      full_seen.LMARKET and full_seen.LMARKET.v
-        and full_seen.LMARKET.v.lmarket_1 and full_seen.LMARKET.v.lmarket_2)
-
-reset()
-full_seen = {}
-frame("Guild.Livestock", { guild = "viking", page = 1, pages = 2,
-                           lmarket_1 = { { lin = 1 } } })
-frame("Guild.Livestock", { guild = "viking", page = 2, pages = 2,
-                           lmarket_2 = { { lin = 2 } } })
-check("a paged delta push reaches the writer as full = false",
-      full_seen.LMARKET and full_seen.LMARKET.full == false,
-      full_seen.LMARKET and tostring(full_seen.LMARKET.full))
-
 if failures > 0 then
   print(failures .. " FAILURE(S)")
   os.exit(1)

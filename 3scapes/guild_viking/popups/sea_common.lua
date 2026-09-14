@@ -63,7 +63,7 @@ end
 -- 0x666666 (guild_viking.lua:13216) -> R=66,G=66,B=66, mid-gray -> C.dim.
 -- ---------------------------------------------------------------------------
 function M.mip_gate_lines(width)
-  return { pagelib.trunc(C.dim .. "No data - enable with: vtoggle mip_voyage" .. RESET, width) }
+  return { pagelib.trunc(C.dim .. "No data yet -- voyage status arrives while a voyage is live" .. RESET, width) }
 end
 
 -- ---------------------------------------------------------------------------

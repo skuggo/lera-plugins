@@ -83,7 +83,7 @@ M.STFX_CAT_LABELS = { Def="Def", Heal="Heal", Off="Off", Pwr="Pwr", DoT="DoT" }
 -- max hp), K (attacker), L (enemy hp percent), M (an index resync carrying no
 -- value) and N (combat rounds). Every one of those fields has another owner
 -- now -- the hp-bar triggers below write hp, mhp and S.combat, and
--- Char.Combat writes the attacker block -- so the reader and its mip.on("FFF")
+-- Char.Combat writes the attacker block -- so the reader and its MIP "FFF"
 -- subscription are gone rather than left as a second source of truth.
 -- ---------------------------------------------------------------------------
 -- Hp-bar screen-scrape triggers. LEGACY 501-776; regexes from

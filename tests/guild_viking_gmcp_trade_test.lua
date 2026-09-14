@@ -32,20 +32,8 @@ for _, name in ipairs({ "handlers.trade", "handlers.kingdom", "handlers.voyage",
                         "handlers.city" }) do
   local mod = require(name)
   if name == "handlers.trade" then trade_mod = mod end
-  for key, fn in pairs(mod) do
-    if not RESERVED[key] then protocol.handler(key, fn) end
-  end
-  for _, pat in ipairs(mod._patterns or {}) do
-    protocol.pattern_handler(pat.pattern, pat.fn)
-  end
   for key, fn in pairs(mod._gmcp or {}) do
     protocol.gmcp_handler(key, fn)
-  end
-  for _, k in ipairs(mod._retired_keys or {}) do
-    protocol.retired_key(k)
-  end
-  for _, pat in ipairs(mod._retired_patterns or {}) do
-    protocol.retired_pattern(pat)
   end
 end
 

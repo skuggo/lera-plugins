@@ -137,22 +137,8 @@ local protocol = require("protocol")
 local RESERVED_KEYS = { _market_seam = true, _patterns = true, _gmcp = true,
                         _retired_keys = true, _retired_patterns = true }
 local city = require("handlers.city")
-for key, fn in pairs(city) do
-  if not RESERVED_KEYS[key] then
-    protocol.handler(key, fn)
-  end
-end
-for _, p in ipairs(city._patterns or {}) do
-  protocol.pattern_handler(p.pattern, p.fn)
-end
 for key, fn in pairs(city._gmcp or {}) do
   protocol.gmcp_handler(key, fn)
-end
-for _, k in ipairs(city._retired_keys or {}) do
-  protocol.retired_key(k)
-end
-for _, pat in ipairs(city._retired_patterns or {}) do
-  protocol.retired_pattern(pat)
 end
 
 local S = state.S
