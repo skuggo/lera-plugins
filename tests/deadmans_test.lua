@@ -32,9 +32,38 @@ lera = {
   dirty = function() end,
 }
 
+-- The one-second tick is where the push transitions are detected, so the test
+-- has to be able to drive it by hand.
+local tick_fn
 timer = {
-  every = function() return 1 end,
+  every = function(_, fn) tick_fn = fn return 1 end,
   cancel = function() end,
+}
+
+local mud_state = "connected"
+mud = {
+  state = function() return mud_state end,
+  send_raw = function() return true end,
+}
+
+-- Fake push_notify. Records what each channel was told, and which channels
+-- were registered, so the cases can assert on both.
+local pushed = {}
+local push_channels = {}
+local push_sink = {
+  register_channel = function(name, opts)
+    push_channels[name] = opts or {}
+  end,
+  notify = function(channel, text)
+    pushed[#pushed + 1] = { channel = channel, text = text }
+    return true
+  end,
+}
+plugin = {
+  get = function(name)
+    if name == "push_notify" then return push_sink end
+    return nil
+  end,
 }
 
 local registered = {}
@@ -208,6 +237,91 @@ check("unload_persists_config", stored_data and stored_data.config
       and stored_data.config.warning_time == 5 * 60
       and stored_data.config.block_time == 20 * 60,
       stored_data and stored_data.config and stored_data.config.block_time)
+
+-- ---- push notifications -----------------------------------------------------
+-- The overlay is only useful to someone looking at the window, which being
+-- idle rules out. These cases are about the notification that goes out instead.
+--
+-- on_unload above dropped the sink, so re-arm the plugin the way the loader
+-- does. Thresholds are whatever the command cases persisted: warning at 5m,
+-- blocking at 20m. The clock is re-anchored first, because on_load stamps
+-- last_user_input from it and the cases above have moved it around.
+local BASE = 100000
+now = BASE
+print = capture_print
+dm.on_load()
+dm.on_setup()
+print = real_print
+
+check("push_registers_both_channels",
+      push_channels.deadman_warning ~= nil and push_channels.deadman_triggered ~= nil)
+-- Both HIGH, like push_notify's own disconnect alert: normal priority is
+-- subject to quiet hours, which is precisely when an unattended client idles
+-- out and you most need to be told.
+check("push_both_channels_are_high_priority",
+      push_channels.deadman_warning and push_channels.deadman_warning.priority == 1
+      and push_channels.deadman_triggered and push_channels.deadman_triggered.priority == 1,
+      (push_channels.deadman_warning and push_channels.deadman_warning.priority)
+        .. "/" .. (push_channels.deadman_triggered and push_channels.deadman_triggered.priority))
+
+local function idle_for(seconds)
+  now = BASE + seconds
+  tick_fn()
+end
+
+local function last_push()
+  return pushed[#pushed]
+end
+
+pushed = {}
+idle_for(4 * 60)
+check("push_silent_before_the_warning", #pushed == 0, #pushed)
+
+idle_for(5 * 60)
+check("push_on_entering_warning", #pushed == 1 and last_push().channel == "deadman_warning",
+      last_push() and last_push().channel)
+check("warning_text_names_the_time_left",
+      last_push().text:find("automation stops in", 1, true) ~= nil, last_push().text)
+
+idle_for(5 * 60 + 240)
+check("push_does_not_repeat_inside_the_interval", #pushed == 1, #pushed)
+
+idle_for(10 * 60)
+check("push_repeats_after_five_minutes", #pushed == 2
+      and last_push().channel == "deadman_warning", #pushed)
+
+-- Crossing into blocked is a state change, so it notifies at once rather than
+-- waiting out the warning channel's repeat clock.
+pushed = {}
+idle_for(20 * 60)
+check("push_on_entering_blocked", #pushed == 1
+      and last_push().channel == "deadman_triggered", last_push() and last_push().channel)
+check("triggered_text_says_sends_are_blocked",
+      last_push().text:find("blocked", 1, true) ~= nil, last_push().text)
+
+idle_for(20 * 60 + 60)
+check("blocked_push_does_not_repeat_inside_the_interval", #pushed == 1, #pushed)
+idle_for(25 * 60)
+check("blocked_push_repeats_after_five_minutes", #pushed == 2, #pushed)
+
+-- Typing ends the episode. The next idle period must notify from scratch
+-- rather than inheriting this one's repeat clock.
+pushed = {}
+now = BASE + 25 * 60
+print = capture_print
+dm.on_user_input("")
+print = real_print
+idle_for(25 * 60 + 5 * 60)
+check("push_after_resume_starts_a_fresh_warning", #pushed == 1
+      and last_push().channel == "deadman_warning", #pushed)
+
+-- Disconnected: nothing is automating, so there is nothing to warn about, and
+-- push_notify has its own disconnect alert.
+pushed = {}
+mud_state = "disconnected"
+idle_for(25 * 60 + 20 * 60)
+check("push_silent_while_disconnected", #pushed == 0, #pushed)
+mud_state = "connected"
 
 if failures > 0 then
   print(failures .. " FAILURE(S)")

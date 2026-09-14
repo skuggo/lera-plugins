@@ -12,6 +12,12 @@ local config = {
   warning_time = 10 * 60,  -- 10 minutes: start showing yellow warning
   antiidle_time = 5 * 60,
   block_time = 15 * 60,    -- 15 minutes: activate deadmans (block sends)
+  -- How often a push repeats while you stay in the same state. The overlay is
+  -- only useful if you are looking at the window, which is exactly what being
+  -- idle rules out -- so the notification repeats rather than firing once and
+  -- trusting you to have seen it. Comfortably above push_notify's own 60s
+  -- per-channel rate limit, so a repeat is never silently swallowed.
+  push_repeat_time = 5 * 60,
   overlay_width_pct = 0.80,  -- 80% of screen width
   overlay_height_pct = 0.40, -- 40% of screen height
 }
@@ -24,6 +30,25 @@ do
   if ok then command = mod end
 end
 
+-- Resolve again at delivery rather than caching once: push_notify may load
+-- after this plugin, or be reloaded under it. Channels default to disabled, so
+-- both of these are opt-in via '/pushn toggle'.
+local function get_push_notify()
+  local current = plugin and plugin.get("push_notify")
+  if current ~= pushn then
+    pushn = current
+    if pushn and pushn.register_channel then
+      -- Both HIGH (Pushover priority 1), matching push_notify's own
+      -- disconnect alert: these are the two events you need to hear about
+      -- while away from the machine, and normal priority is subject to
+      -- quiet hours -- which is exactly when an unattended client idles out.
+      pushn.register_channel("deadman_warning", { priority = 1 })
+      pushn.register_channel("deadman_triggered", { priority = 1 })
+    end
+  end
+  return pushn
+end
+
 -- State
 local last_user_input = 0  -- Timestamp of last user input
 local blocked_count = 0     -- Number of sends blocked this session
@@ -32,6 +57,9 @@ local antiidle_enabled = false -- Arm after login; never send into a password pr
 local antiidle_last = 0
 local antiidle_sent = 0
 local command_id = nil      -- Registered command ID for cleanup
+local pushn                 -- push_notify consumer, resolved late (see below)
+local push_stage = nil      -- nil | "warning" | "blocked": what was last pushed
+local push_last = 0         -- when that push went out
 
 -- ANSI 256 color palette indices
 local colors = {
@@ -118,6 +146,13 @@ local function show_status()
   print("[deadmans] Idle time: " .. format_time(idle))
   print("[deadmans] Warning at: " .. math.floor(config.warning_time / 60) .. " minutes")
   print("[deadmans] Blocking at: " .. math.floor(config.block_time / 60) .. " minutes")
+  -- Named here because the channels default to OFF: without this, the only way
+  -- to discover they exist is to read '/pushn toggle' and guess what they are.
+  local sink = get_push_notify()
+  print("[deadmans] Push: " .. (sink and "deadman_warning / deadman_triggered"
+        .. " (enable with '/pushn toggle <channel>', repeats every "
+        .. math.floor(config.push_repeat_time / 60) .. "m while idle)"
+        or "push_notify not loaded"))
   if blocked_count > 0 then
     print("[deadmans] Blocked sends: " .. blocked_count)
   end
@@ -226,6 +261,11 @@ local function note_user_input()
   local was_active = is_active()
   last_user_input = get_time()
 
+  -- Cleared here as well as in update_push's no-stage branch: typing is the
+  -- end of the episode, and the next idle period should notify again from
+  -- scratch rather than inheriting this one's repeat clock.
+  push_stage, push_last = nil, 0
+
   if was_active then
     print("[deadmans] Resumed - automation re-enabled")
     if blocked_count > 0 then
@@ -327,6 +367,50 @@ function M.on_disconnect()
   antiidle_enabled = false
 end
 
+-- Push the state change, and keep pushing while it lasts.
+--
+-- Driven from the one-second tick rather than from on_render: on_render only
+-- runs when something draws, and an unattended client is precisely the case
+-- where it may not. Deliberately silent while disconnected -- no automation is
+-- running to be blocked, and push_notify has its own disconnect alert for that.
+local function update_push(now)
+  local stage = nil
+  if is_active() then
+    stage = "blocked"
+  elseif is_warning() then
+    stage = "warning"
+  end
+
+  if not stage then
+    push_stage, push_last = nil, 0
+    return
+  end
+  if mud.state() ~= "connected" then return end
+
+  local due = (stage ~= push_stage) or (now - push_last >= config.push_repeat_time)
+  if not due then return end
+
+  local sink = get_push_notify()
+  if not sink or not sink.notify then return end
+
+  local idle = format_time(get_idle_time())
+  if stage == "blocked" then
+    sink.notify("deadman_triggered",
+      "Deadman triggered - idle " .. idle .. ", automated sends are blocked")
+  else
+    local left = config.block_time - get_idle_time()
+    if left < 0 then left = 0 end
+    sink.notify("deadman_warning",
+      "Deadman warning - idle " .. idle .. ", automation stops in "
+        .. format_time(left))
+  end
+
+  -- Stamped whatever notify() returned. A push refused because the channel is
+  -- off, or because credentials are unset, must not leave this retrying every
+  -- second for the rest of the idle period.
+  push_stage, push_last = stage, now
+end
+
 local function update_display()
   if antiidle_enabled then
     if mud.state() ~= "connected" then
@@ -340,6 +424,7 @@ local function update_display()
       end
     end
   end
+  update_push(get_time())
   if is_warning() or is_active() then
     -- Force screen redraw to update the overlay
     lera.dirty()
@@ -372,7 +457,12 @@ function M.on_load()
   print("[deadmans] Type '/deadmans' for commands")
 end
 
+function M.on_setup()
+  get_push_notify()
+end
+
 function M.on_unload()
+  pushn = nil
   unregister_command()
 
   -- Stop update timer
