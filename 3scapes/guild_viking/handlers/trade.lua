@@ -225,58 +225,67 @@ end
 -- parsed here exactly as the MIP handler parses it, against the same
 -- STAFF_STAT_ORDER. The record also carries `id` and `best_stat`, which MIP
 -- never sent and nothing reads; they are ignored rather than stored.
--- staff is a COMPOSITE now: the server caps the roster and splits it into
--- staff_0, staff_1, ... plus staff_total/staff_shown, because a full roster
--- does not fit a package's 8-page budget and the pager drops an oversized
--- list whole rather than truncating it. This writer stitches the chunks back
--- together in order.
+-- staff arrives as ONE ROTATING SLICE per push, not the whole list: a full
+-- roster does not fit a package's page budget, so the server walks a cursor
+-- and this accumulates the slices. Slices are keyed by INDEX, so a re-sent
+-- slice replaces rather than appends and the list cannot drift as staff are
+-- hired or die.
 --
--- A delta may carry any subset of the chunks, so a frame that omits them all
--- must leave the list alone rather than blanking it -- the same rule as
--- write_refinery's grades and write_wstock's cap.
+-- The list is rebuilt from every slice seen so far, in index order, so it
+-- fills in over the first few pushes and stays complete after that. A frame
+-- carrying no slice at all (only the counters) leaves it alone.
 local function write_staff(parts)
   if type(parts) ~= "table" then return end
 
   if parts.staff_total ~= nil then S.staff_total = tonumber(parts.staff_total) or 0 end
-  if parts.staff_shown ~= nil then S.staff_shown = tonumber(parts.staff_shown) or 0 end
+  if parts.staff_slices ~= nil then S.staff_slices = tonumber(parts.staff_slices) or 0 end
 
-  local records = {}
+  S.staff_by_slice = S.staff_by_slice or {}
   local carried = false
-  for i = 0, 3 do
-    local chunk = parts["staff_" .. i]
-    if type(chunk) == "table" then
+  for i = 0, 7 do
+    local slice = parts["staff_" .. i]
+    if type(slice) == "table" then
+      S.staff_by_slice[i] = slice
       carried = true
-      for _, r in ipairs(chunk) do records[#records + 1] = r end
     end
   end
   if not carried then return end
 
+  -- Drop slices past the current count: a roster that shrank must not leave a
+  -- stale tail behind.
+  for i in pairs(S.staff_by_slice) do
+    if i >= (S.staff_slices or 0) then S.staff_by_slice[i] = nil end
+  end
+
   S.staff_list = {}
-  for _, r in ipairs(records) do
-    if #S.staff_list >= 50 then break end
-    if type(r) == "table" then
-      local stats = {}
-      local i = 0
-      for v in tostring(r.stats or ""):gmatch("[^,]+") do
-        i = i + 1
-        if STAFF_STAT_ORDER[i] then stats[STAFF_STAT_ORDER[i]] = tonumber(v) or 0 end
+  for i = 0, (S.staff_slices or 0) - 1 do
+    for _, r in ipairs(S.staff_by_slice[i] or {}) do
+      if #S.staff_list >= 80 then break end
+      if type(r) == "table" then
+        local stats = {}
+        local si = 0
+        for v in tostring(r.stats or ""):gmatch("[^,]+") do
+          si = si + 1
+          if STAFF_STAT_ORDER[si] then stats[STAFF_STAT_ORDER[si]] = tonumber(v) or 0 end
+        end
+        table.insert(S.staff_list, {
+          name        = tostring(r.name or ""),
+          -- `assigned` -> assigned_to, `stat` -> stat_key, `arrive` -> arrive_at.
+          assigned_to = tostring(r.assigned or "0"),
+          stat_key    = tostring(r.stat or ""),
+          stats       = stats,
+          trait       = tostring(r.trait or "0"),
+          loyalty     = tonumber(r.loyalty) or 3,
+          age         = tostring(r.age or "veteran"),
+          arrive_at   = tonumber(r.arrive) or 0,
+        })
       end
-      table.insert(S.staff_list, {
-        name        = tostring(r.name or ""),
-        -- `assigned` -> assigned_to, `stat` -> stat_key, `arrive` -> arrive_at.
-        assigned_to = tostring(r.assigned or "0"),
-        stat_key    = tostring(r.stat or ""),
-        stats       = stats,
-        trait       = tostring(r.trait or "0"),
-        loyalty     = tonumber(r.loyalty) or 3,
-        age         = tostring(r.age or "veteran"),
-        arrive_at   = tonumber(r.arrive) or 0,
-      })
     end
   end
 end
 
--- bonds. `a`/`b` are the two staff ids the bond joins.
+-- bonds. `a`/`b` are HIRD ids, not staff ids -- the Bonds page resolves them
+-- against S.hird_by_id, which write_hird in handlers/kingdom.lua fills.
 local function write_bonds(records)
   if type(records) ~= "table" then return end
   S.bonds_list = {}

@@ -218,8 +218,10 @@ local function seed_staff(str)
                               loyalty = tonumber(f[6]) or 3, age = f[7],
                               arrive = tonumber(f[8]) or 0 }
   end
-  gmcp("Guild.Roster", { staff_0 = entries,
-                         staff_total = #entries, staff_shown = #entries })
+  -- One rotating slice carrying the whole fixture: staff_slices tells the
+  -- client how many slices make up the list, and these fixtures fit in one.
+  gmcp("Guild.Roster", { staff_0 = entries, staff_total = #entries,
+                         staff_slices = #entries > 0 and 1 or 0 })
 end
 
 local function seed_daler(v)

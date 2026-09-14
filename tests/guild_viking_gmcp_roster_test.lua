@@ -45,10 +45,11 @@ end
 -- `stats` is a comma-joined string in a fixed order on both transports; the
 -- server builds exactly one such string and MIP embeds it, so the parse is the
 -- same. The order is combat,trade,craft,sea,wild,land,charm.
--- staff arrives CHUNKED: the server caps the roster and splits it into
--- staff_0/staff_1/... with staff_total/staff_shown alongside, because a full
--- roster does not fit a package's page budget.
-roster({ staff_total = 1, staff_shown = 1, staff_0 = {
+-- staff arrives as ONE ROTATING SLICE per push: the server walks a cursor and
+-- sends staff_<idx> with staff_total/staff_slices alongside, because a full
+-- roster does not fit a package's page budget. The client accumulates slices
+-- by index until it holds the whole list.
+roster({ staff_total = 1, staff_slices = 1, staff_0 = {
   { id = 3, name = "Ingrid", assigned = "smithy", stat = "craft",
     stats = "10,20,30,40,50,60,70", trait = "diligent", loyalty = 5,
     age = "young", arrive = 1234, best_stat = "charm" },
@@ -61,34 +62,61 @@ check("staff stat lands on stat_key", st.stat_key == "craft", st.stat_key)
 check("staff arrive lands on arrive_at", st.arrive_at == 1234, st.arrive_at)
 check("staff scalar fields", st.name == "Ingrid" and st.trait == "diligent"
       and st.loyalty == 5 and st.age == "young")
-check("staff counters land", S.staff_total == 1 and S.staff_shown == 1,
-      S.staff_total .. "/" .. S.staff_shown)
+check("staff counters land", S.staff_total == 1 and S.staff_slices == 1,
+      S.staff_total .. "/" .. S.staff_slices)
 -- The stat string is positional, so a decoder that mapped it to the wrong
 -- names would still produce seven numbers. Each is named here.
 check("staff stats map to their names in order",
       st.stats.combat == 10 and st.stats.trade == 20 and st.stats.craft == 30
       and st.stats.sea == 40 and st.stats.wild == 50 and st.stats.land == 60
       and st.stats.charm == 70)
-roster({ staff_0 = { { name = "Bare" } } })
+roster({ staff_slices = 1, staff_0 = { { name = "Bare" } } })
 check("staff defaults match the MIP handler's",
       S.staff_list[1].assigned_to == "0" and S.staff_list[1].stat_key == ""
       and S.staff_list[1].trait == "0" and S.staff_list[1].loyalty == 3
       and S.staff_list[1].age == "veteran" and S.staff_list[1].arrive_at == 0)
--- The chunks stitch back together in order, and the client keeps its own
--- 50-record ceiling as a backstop under the server's cap.
+
+-- Rotation: the server sends one slice per push, so the list must FILL IN
+-- across frames rather than be rebuilt from whichever slice arrived last.
+-- A rebuild-per-frame handler passes every assertion above and still leaves
+-- the roster showing only the newest slice, which is the bug this guards.
 local many_a, many_b = {}, {}
 for i = 1, 30 do many_a[i] = { name = "A" .. i } end
 for i = 1, 30 do many_b[i] = { name = "B" .. i } end
-roster({ staff_0 = many_a, staff_1 = many_b })
-check("chunks are stitched in order", S.staff_list[1].name == "A1"
+roster({ staff_total = 60, staff_slices = 2, staff_0 = many_a })
+check("one slice alone renders as a partial list", #S.staff_list == 30, #S.staff_list)
+roster({ staff_1 = many_b })
+check("the next push accumulates onto it", #S.staff_list == 60, #S.staff_list)
+check("slices stitch in index order", S.staff_list[1].name == "A1"
       and S.staff_list[31].name == "B1", S.staff_list[31].name)
-check("staff cap at 50", #S.staff_list == 50, #S.staff_list)
+-- A re-sent slice replaces its own index rather than appending, so a roster
+-- cannot drift as staff are hired or die.
+roster({ staff_0 = { { name = "A1b" } } })
+check("a re-sent slice replaces in place", #S.staff_list == 31
+      and S.staff_list[1].name == "A1b", #S.staff_list)
 
--- A delta carrying neither chunk must leave the roster alone. Blanking it
+-- A delta carrying no slice at all must leave the roster alone. Blanking it
 -- here is the bug that took the grades off the Refineries panel.
 roster({ staff_total = 64 })
-check("a chunkless delta keeps the roster", #S.staff_list == 50, #S.staff_list)
+check("a sliceless delta keeps the roster", #S.staff_list == 31, #S.staff_list)
 check("but still updates the counter", S.staff_total == 64, S.staff_total)
+-- A shrinking roster drops its stale tail: slices past the new count go.
+roster({ staff_total = 1, staff_slices = 1, staff_0 = { { name = "Only" } } })
+check("a shrunk roster drops the stale tail", #S.staff_list == 1
+      and S.staff_list[1].name == "Only", #S.staff_list)
+
+-- ---- hird ------------------------------------------------------------------
+-- hird rotates the same way, and Bonds resolves its pair ids against
+-- S.hird_by_id -- a half-filled accumulator is what renders "#7 + #8".
+roster({ hird_total = 2, hird_slices = 2,
+         hird_0 = { { id = 7, name = "Sigrun" } } })
+check("hird slice 0 lands by id", S.hird_by_id[7] ~= nil
+      and S.hird_by_id[7].name == "Sigrun")
+roster({ hird_1 = { { id = 8, name = "Toste" } } })
+check("hird accumulates across pushes", S.hird_by_id[7] ~= nil
+      and S.hird_by_id[8] ~= nil and #S.hird_list == 2, #S.hird_list)
+roster({ hird_total = 2 })
+check("a sliceless hird delta keeps the roster", #S.hird_list == 2, #S.hird_list)
 
 -- ---- bonds -----------------------------------------------------------------
 roster({ bonds = { { a = 3, b = 7, ticks = 12, tier = 2 } } })
@@ -172,8 +200,8 @@ check("a hall-only vfind delta leaves the lists standing",
       S.vfind.tier == 3 and #S.vfind.postings == 1 and #S.vfind.offers == 1
       and #S.vfind.auctions == 1)
 
--- ---- hird ------------------------------------------------------------------
-roster({ hird = {
+-- ---- hird record fields ----------------------------------------------------
+roster({ hird_total = 2, hird_slices = 1, hird_0 = {
   { id = 11, name = "Bjorn", status = "ready", level = 4, atk = 12, def = 9,
     loyalty = 5, hired = 900, age = "prime", mode = "offensive", champ = 1,
     wpn = 2, arm = 3 },

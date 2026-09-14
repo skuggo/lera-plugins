@@ -160,10 +160,14 @@ local state = {
   mission_new_left = -1,  -- newbie errands remaining this period (-1 = unknown)
   bdmg     = {},   -- { bldg_id, pct }
   staff_list = {},  -- { name, assigned_to, stat_key, stats={combat=N,...}, trait, loyalty, age, arrive_at }
-  staff_total = 0,  -- how many staff the guild actually has
-  staff_shown = 0,  -- how many of them fit in the push (see write_staff)
+  staff_total = 0,     -- how many staff the guild has
+  staff_slices = 0,    -- how many rotating slices that list is sent in
+  staff_by_slice = {}, -- [index] = slice, accumulated across pushes
   hird_list  = {},  -- { name, status, level, mode }
-  hird_by_id = {},  -- [id] = hird record (populated when server sends id-prefixed HIRD packet)
+  hird_by_id = {},    -- [id] = hird record; what Bonds resolves pair ids against
+  hird_total = 0,     -- how many hirdmadrs the guild has
+  hird_slices = 0,    -- how many rotating slices that list is sent in
+  hird_by_slice = {}, -- [index] = slice, accumulated across pushes
   bonds_list  = {},  -- { id_a, id_b, ticks, tier }
   standings   = {},  -- { [lin_id] = { name, score, label, is_own } }
   village_rep = {},  -- { [lin_id] = { name, rep, rank, next_at } }

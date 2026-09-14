@@ -278,9 +278,12 @@ local function staff_lines(add, width)
   -- page budget -- so say so when it is. A partial list that reads as complete
   -- is the failure this whole mechanism exists to avoid: you would otherwise
   -- look at 28 of 64 staff and conclude the other 36 had wandered off.
-  local total, shown = tonumber(S.staff_total) or 0, tonumber(S.staff_shown) or 0
-  if total > 0 and shown > 0 and total > shown then
-    add(pagelib.header(width, "Hired Folk (" .. shown .. " of " .. total .. ")"))
+  -- The roster arrives one rotating slice per push, so the first few frames
+  -- after a connect show a partial list. Say so rather than letting it read as
+  -- a complete roster that happens to be short.
+  local total = tonumber(S.staff_total) or 0
+  if total > 0 and #list < total then
+    add(pagelib.header(width, "Hired Folk (" .. #list .. " of " .. total .. ")"))
   else
     add(pagelib.header(width, "Hired Folk"))
   end
