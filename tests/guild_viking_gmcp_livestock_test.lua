@@ -58,6 +58,52 @@ w.HERDS({
 })
 check("herds replaced wholesale, byre gone", S.herds.byre == nil)
 
+local history = { "nordic", "icelandic" }
+w.HERDS({ { bldg = "henhouse", age_ticks = 0, breeds = history } })
+check("herd zero age remains known", S.herds.henhouse.age_ticks == 0)
+check("complete breed history retained", #S.herds.henhouse.breeds == 2)
+history[1] = "changed"
+check("breed history is copied", S.herds.henhouse.breeds[1] ~= "changed"
+      and S.herds.henhouse.breeds[2] ~= "changed")
+w.HERDS({ { bldg = "henhouse" } })
+check("legacy age remains unknown", S.herds.henhouse.age_ticks == nil)
+check("legacy breed history remains unknown", S.herds.henhouse.breeds == nil)
+for _, bad in ipairs({ "nordic,", "nordic,,other", { nordic = 4 }, { "nordic", false }, { [3] = "nordic" } }) do
+  w.HERDS({ { bldg = "henhouse", breeds = bad } })
+  check("malformed breed history is not proof of novelty", S.herds.henhouse.breeds == nil)
+end
+w.HERDS({ { bldg = "henhouse", breeds = {} } })
+check("explicit empty history remains known", type(S.herds.henhouse.breeds) == "table"
+      and #S.herds.henhouse.breeds == 0)
+
+w.HERDS({ { bldg = "stable", head = 9, breeds = "nordic,icelandic",
+  management = "20;2;9;4;5;0;4050;825;5001,5025,5100,5200,5300,5400" } })
+check("compact management retains row head and fractions", S.herds.stable.head == 9
+  and S.herds.stable.hard == 50.01 and S.herds.stable.gen == 8.25
+  and S.herds.stable.age_ticks == 40.5 and S.herds.stable.management.free == 9)
+check("compact history is complete", #S.herds.stable.breeds == 2)
+for _, bad in ipairs({ "", "20;2;9;4;5;0;4050;825;5001,5025,5100,5200,5300",
+  "20;2;9;4;5;2;4050;825;5001,5025,5100,5200,5300,5400",
+  "20;2;10;4;5;0;4050;825;5001,5025,5100,5200,5300,5400",
+  "20;2;9;4;5;0;4050;825;10001,5025,5100,5200,5300,5400",
+  "20;2;9;4;5;0;4.5;825;5001,5025,5100,5200,5300,5400" }) do
+  w.HERDS({ { bldg = "stable", head = 9, management = bad } })
+  check("invalid compact management remains unknown", S.herds.stable.management == nil
+    and S.herds.stable.management_present)
+end
+local token = string.rep("a", 32)
+local compact_quote = "2;ok;5000,5000,5000,5000,5000,5000;5010,5010,5010,5010,5010,5010;800;784;0;1"
+w.LMARKET({ lmarket_1 = { { token = token, unit_price = "123", available = "3", quote = compact_quote } } })
+check("compact exact offer and quote parsed", S.lmarket[1][1].unit_price == 123
+  and S.lmarket[1][1].available == 3 and S.lmarket[1][1].token == token
+  and S.lmarket[1][1].quote.after_stats.hard == 5010)
+w.LMARKET({ lmarket_1 = { { token = token, unit_price = 123, available = 3 } } })
+check("rotated missing quote clears old quote", S.lmarket[1][1].quote == nil)
+w.LMARKET({ lmarket_1 = { { token = "bad", unit_price = "1.2", available = -1, quote = compact_quote .. ";x" } } })
+check("malformed compact offer fields unknown", S.lmarket[1][1].token == nil
+  and S.lmarket[1][1].unit_price == nil and S.lmarket[1][1].available == nil
+  and S.lmarket[1][1].quote == nil)
+
 -- ---- bqueue (sibling split) ------------------------------------------------
 w.BQUEUE({
   bqueue_used = 2, bqueue_max = 6,
@@ -150,6 +196,190 @@ check("a delta after a full frame merges, not replaces",
 -- ---- lneeds ----------------------------------------------------------------
 w.LNEEDS({ { species = "sheep", current = 2, cap = 14 } })
 check("lneeds", #S.lneeds == 1 and S.lneeds[1].cap == 14)
+
+-- ---- connection-local receipt evidence ------------------------------------
+do
+  local real_time, now = os.time, 10000
+  os.time = function() return now end
+  local state = require("state")
+  local protocol = require("protocol")
+  for key, writer in pairs(w) do protocol.gmcp_handler(key, writer) end
+  local function frame(payload)
+    payload.guild = "viking"
+    protocol.on_gmcp("Guild.Livestock", payload)
+  end
+  local function evidence(key, at, seq)
+    local e = (S.herd_observed or {})[key]
+    return e and e.at == at and e.seq == seq
+  end
+  state.reset_connection()
+  frame({ bqueue_used = 1 })
+  frame({ bqueue_max = 6 })
+  check("capacity-only frames cannot establish queue confirmation",
+    S.herd_observed.bqueue == nil)
+  frame({ herds = { { bldg = "byre", head = 2 } },
+    lpending = { { bldg = "byre", count = 1, secs = 30 } },
+    bqueue = { { slot = 1, qty = 2, secs = 60 } } })
+  check("actual livestock writes establish receipt revisions",
+    evidence("herds", 10000, 1) and evidence("pending", 10000, 1)
+    and evidence("bqueue", 10000, 1))
+  check("herd row records receipt time", S.herds.byre._received_at == 10000)
+  local queue = S.bqueue
+  now = 10020
+  for _, partial in ipairs({ { bqueue_used = 2 }, { bqueue_max = 8 },
+      { bqueue_used = 3, bqueue_max = 9 } }) do
+    frame(partial)
+    check("capacity-only delta cannot refresh existing queue confirmation",
+      S.bqueue == queue and evidence("bqueue", 10000, 1))
+  end
+  check("capacity-only deltas still apply used/max", S.bqueue_used == 3 and S.bqueue_max == 9)
+  frame({ lfeed = { grain = 80 }, lneeds = {} })
+  check("omitted herds and pending do not advance receipt revisions",
+    evidence("herds", 10000, 1) and evidence("pending", 10000, 1)
+    and S.herds.byre._received_at == 10000)
+  frame({ lpending = {} })
+  check("empty pending is an actual write, not an omitted field",
+    #S.lpending == 0 and evidence("pending", 10020, 2) and evidence("herds", 10000, 1))
+  frame({ lpending = {} })
+  check("same-second identical pending receipt advances sequence", evidence("pending", 10020, 3))
+  frame({ herds = {}, bqueue = {} })
+  check("explicit empty herds and slots refresh confirmation",
+    next(S.herds) == nil and #S.bqueue == 0
+    and evidence("herds", 10020, 2) and evidence("bqueue", 10020, 2))
+  frame({ herds = {} })
+  check("same-second identical herds receipt advances sequence", evidence("herds", 10020, 3))
+
+  frame({ lmarket_1 = { { lin = 1, idx = 0, price = 400 } },
+    lmarket_5 = { { lin = 5, idx = 0, price = 900 } } })
+  now = 10040
+  frame({ lmarket_5 = { { lin = 5, idx = 0, price = 950 } } })
+  check("market delta timestamps only the received lineage",
+    S.lmarket[1][1]._received_at == 10020 and S.lmarket[1][1].price == 400
+    and S.lmarket[5][1]._received_at == 10040 and S.lmarket[5][1].price == 950)
+  now = 10060
+  frame({ full = 1, lmarket_5 = { { lin = 5, idx = 0, price = 950 } } })
+  check("market full resend timestamps replacement and evicts missing lineage",
+    S.lmarket[1] == nil and S.lmarket[5][1]._received_at == 10060)
+
+  local trade = require("handlers.trade")._gmcp
+  trade.DALER(123)
+  trade.TGOODS({ tgoods_5 = { { good = "p", sell = 7 } } })
+  local epoch = S.herd_connection_epoch
+  local market_rows, price_rows = S.lmarket, S.trade_goods
+  state.reset_connection()
+  check("reconnect clears all receipt evidence and advances epoch",
+    next(S.herd_observed) == nil and S.herd_connection_epoch == epoch + 1
+    and S.livestock_seen == false)
+  check("reconnect preserves cached data without refreshing row receipts",
+    S.lmarket == market_rows and S.trade_goods == price_rows and S.daler == 123
+    and S.lmarket[5][1]._received_at == 10060
+    and S.trade_goods[5].pork._received_at == 10060)
+  now = 10080
+  frame({ bqueue_used = 0, bqueue_max = 9 })
+  check("post-reconnect capacity cannot resurrect old confirmation", next(S.herd_observed) == nil)
+  frame({ herds = {} })
+  check("new connection starts fresh receipt sequence", evidence("herds", 10080, 1))
+  state.reset_connection()
+  check("successive reconnect advances epoch again and clears new evidence",
+    S.herd_connection_epoch == epoch + 2 and next(S.herd_observed) == nil)
+  os.time = real_time
+end
+
+-- Same-package bounded chunks: real protocol reassembly and livestock writers.
+do
+  local state, protocol = require("state"), require("protocol")
+  local real_time, now = os.time, 20000
+  os.time = function() return now end
+  state.reset_connection()
+  protocol.reset_connection()
+  protocol.gmcp_handler("DALER", require("handlers.trade")._gmcp.DALER)
+  S.lmarket = {}
+  local function market(payload)
+    payload.guild = payload.guild or "viking"
+    if payload.lmarket_partial == nil and (not payload.page or payload.page == 1) then
+      payload.lmarket_partial = 1
+    end
+    protocol.on_gmcp("Guild.Livestock", payload)
+  end
+  market({ full = 1, lmarket_1 = { { idx = 0, price = 100 } },
+    lmarket_13 = { { idx = 0, price = 1300 } },
+    lfind_posts = { { id = 1 } }, lfind_offers = { { id = 2 } },
+    lfind_auctions = { { id = 3 } } })
+  local retained = S.lmarket[13]
+  check("new market routes find's three keys", S.lfind.posts[1].id == 1
+    and S.lfind.offers[1].id == 2 and S.lfind.auctions[1].id == 3)
+  check("market-only receipt cannot synthesize pending or herd proof",
+    next(S.herd_observed) == nil and not S.livestock_seen)
+  now = 20020
+  market({ full = 1, lmarket_1 = { { idx = 0, price = 200 } } })
+  check("new full market preserves omitted lineage and original timestamp",
+    S.lmarket[13] == retained and retained[1]._received_at == 20000
+    and S.lmarket[1][1].price == 200 and S.lmarket[1][1]._received_at == 20020)
+  local before = S.lmarket[1]
+  market({ full = 1, page = 1, pages = 3,
+    lmarket_1 = { { idx = 0, price = 300 } } })
+  protocol.on_gmcp("Guild.State", { guild = "viking", full = 1, daler = 321 })
+  market({ full = 1, page = 2, pages = 3,
+    lmarket_1 = { { idx = 1, price = 301 } } })
+  check("market slices are not published before final page", S.lmarket[1] == before)
+  now = 20040
+  market({ full = 1, page = 3, pages = 3,
+    lmarket_1 = { { idx = 2, price = 302 } } })
+  check("repeated lineage slices concatenate once and replace atomically",
+    #S.lmarket[1] == 3 and S.lmarket[1][1].price == 300
+    and S.lmarket[1][2].price == 301 and S.lmarket[1][3].price == 302
+    and S.lmarket[1][1]._received_at == 20040
+    and S.lmarket[1][3]._received_at == 20040 and S.lmarket[13] == retained)
+  check("first-page marker survives reassembly and other-package interleaving",
+    S.lmarket[13] == retained and S.daler == 321
+    and protocol.gmcp_stats().unknown.lmarket_partial == nil)
+  local assembled = S.lmarket[1]
+  market({ full = 1, page = 3, pages = 3,
+    lmarket_1 = { { idx = 2, price = 302 } } })
+  check("duplicate final page does not append again", S.lmarket[1] == assembled
+    and #S.lmarket[1] == 3)
+  market({ guild = "mage", full = 1, lmarket_1 = {}, lpending = {} })
+  check("foreign market rejected before handlers", S.lmarket[1] == assembled
+    and S.herd_observed.pending == nil)
+  protocol.on_gmcp("Guild.Livestock", { guild = "viking", full = 1,
+    herds = {}, bqueue_used = 0, bqueue_max = 6, bqueue = {},
+    lfeed = { grain = 10 }, lpending = {}, lneeds = {} })
+  check("seven-key core full does not clear market", S.lmarket[1] == assembled
+    and S.lmarket[13] == retained and retained[1]._received_at == 20000)
+  local pending = S.herd_observed.pending
+  market({ full = 1, lmarket_1 = {} })
+  check("explicit empty clears exactly its lineage", #S.lmarket[1] == 0
+    and S.lmarket[13] == retained and retained[1]._received_at == 20000)
+  check("market omission cannot refresh pending proof", S.herd_observed.pending == pending)
+  market({ full = 1, lfind_posts = {} })
+  check("market full without lineage keys preserves pools", S.lmarket[13] == retained
+    and #S.lfind.posts == 0 and S.lfind.offers[1].id == 2)
+  protocol.on_gmcp("Guild.Livestock", { guild = "viking", full = 1,
+    lmarket_1 = { { idx = 0, price = 400 } } })
+  check("legacy bulk full still evicts omitted lineage", S.lmarket[13] == nil
+    and S.lmarket[1][1].price == 400)
+  for _, marker in ipairs({ false, true, "1", 0 }) do
+    market({ full = 1, lmarket_13 = { { price = 1300 } } })
+    market({ full = 1, lmarket_partial = marker, lmarket_1 = { { price = 500 } } })
+    check("non-numeric-one marker retains normal full eviction: " .. tostring(marker),
+      S.lmarket[13] == nil and S.lmarket[1][1].price == 500)
+  end
+  market({ full = 1, lmarket_13 = { { price = 1300 } } })
+  protocol.on_gmcp("Guild.Trade", { guild = "viking", full = 1,
+    lmarket_partial = 1, lmarket_1 = {} })
+  check("marker cannot override full on other packages", S.lmarket[13] == nil)
+  market({ full = 1, lmarket_13 = { { price = 1300 } } })
+  local malformed = protocol.gmcp_stats().malformed
+  market({ full = 1, page = 1, pages = 2, lmarket_partial = 1,
+    lmarket_1 = { { price = 600 } } })
+  market({ full = 1, page = 2, pages = 2, lmarket_partial = 1,
+    lmarket_1 = { { price = 601 } } })
+  check("repeated marker is recognized metadata, not a malformed scalar repeat",
+    protocol.gmcp_stats().malformed == malformed
+    and protocol.gmcp_stats().unknown.lmarket_partial == nil
+    and #S.lmarket[1] == 2 and S.lmarket[13] ~= nil)
+  os.time = real_time
+end
 
 if failures > 0 then
   print(failures .. " FAILURE(S)")

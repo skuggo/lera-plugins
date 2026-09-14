@@ -66,6 +66,13 @@ check("herd shows head against cap", withherd:find("9", 1, true) ~= nil
 check("herd trait is named, not printed raw",
       withherd:find("Prolific", 1, true) ~= nil)
 
+check("positive herd age is displayed", plain(100):find("Age:12", 1, true) ~= nil)
+S.herds.sheepfold.age_ticks = 0
+check("newborn average age is explicitly zero", plain(100):find("Age:0", 1, true) ~= nil)
+S.herds.sheepfold.age_ticks = nil
+check("missing age is unknown, not newborn", plain(100):find("Age:?", 1, true) ~= nil)
+S.herds.sheepfold.age_ticks = 12
+
 -- A section toggled off must vanish entirely.
 page_opts.set("show_stock_herds", false)
 check("herds section respects its toggle",
@@ -151,6 +158,18 @@ page_opts.set("show_stock_feed", false)
 check("feed section respects its toggle",
       plain(80):find("Per tick:", 1, true) == nil)
 page_opts.set("show_stock_feed", true)
+
+require("handlers.livestock")._gmcp.HERDS({ { bldg = "stable", head = 9,
+  management = "20;2;9;9;0;0;4050;825;5001,5025,5100,5200,5300,5400" } })
+local compact = plain(140)
+check("management cap overrides mirrored tier", compact:find("9/20", 1, true) ~= nil)
+check("fractional herd stats and generation visible", compact:find("H:50.01", 1, true)
+  and compact:find("Gen:8.25", 1, true))
+check("fractional age visible", compact:find("Age:40.50", 1, true) ~= nil)
+check("concise pen safety metadata visible", compact:find("Penfree:9  pending:2  protected:9  auto-cull:off", 1, true) ~= nil)
+for _, line in ipairs(page.lines(40)) do
+  check("compact page stays within narrow width", #(line:gsub("\027%[[%d;]*m", "")) <= 40)
+end
 
 if failures > 0 then
   print(failures .. " FAILURE(S)")

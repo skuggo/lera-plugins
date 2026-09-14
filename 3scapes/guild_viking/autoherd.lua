@@ -12,13 +12,12 @@
 -- oversight -- it is documented here, plainly, so nobody discovers it by
 -- losing daler.
 --
--- Auto-Herd emits exactly ONE command form, built in exactly one place
--- (buy_cmd, below): `vlivestock buy <lineage_token> <id>`, with a 1-based
--- id. It NEVER emits `vlivestock slaughter` -- the server has that command
--- (vlivestock.c's do_slaughter), but LEGACY never called it (grepping
--- guild_viking_husbandry.lua for "slaughter" finds only the two stale
--- comments quoted below, no send site), and slaughtering livestock is
--- irreversible, so it is outside the authority the master toggle grants.
+-- Auto-Herd builds purchases only in buy_cmd: legacy whole-lot
+-- `vlivestock buy <lineage_token> <id>` or protected buys with count + token.
+-- Both use a 1-based id. The normal planner NEVER slaughters. Separately,
+-- explicit `replace on` authorizes irreversible slaughter via herd_replace,
+-- with the master also on, fresh observations, explicit models/costs and
+-- successfully persisted exposure/marker BEFORE sending.
 -- At most ONE action is taken per AH_INTERVAL cycle, and every access check
 -- (owned + enabled building, budget above `reserve`, herd space under the
 -- building cap, no matching delivery already in S.lpending) happens BEFORE
@@ -29,8 +28,8 @@
 -- slaughtering surplus" -- that comment is stale. The code only ever reads
 -- `keep` as the RESTOCK BREEDING FLOOR, the same way LEGACY's own
 -- ah_keep_ok()/restock planner read it (husbandry.lua:270). Nothing in this
--- port slaughters anything. Documented correctly here rather than copied
--- stale.
+-- normal planner slaughters anything. Replacement additionally respects this
+-- floor; it has its own opt-in, limits and halt acknowledgement.
 --
 -- PROVENANCE, every line grep-verified against
 -- /home/simon/code/3s_scripts_old/lua/guild_viking_husbandry.lua before
@@ -156,6 +155,9 @@ local page_opts = require("page_opts")
 -- requires only state, so this is a leaf require -- no cycle, unlike the
 -- deferred persist require below.
 local market = require("market")
+local replace = require("herd_replace")
+local replacement_initialized = setmetatable({}, { __mode = "k" })
+local replacement_save_failed = setmetatable({}, { __mode = "k" })
 
 local M = {}
 
@@ -163,7 +165,7 @@ local M = {}
 -- that requires this module (see the OnPluginSaveState adaptation note
 -- above) -- deferred the same way autoraid.lua's own save() is.
 local function save()
-  require("persist").save()
+  return require("persist").save()
 end
 
 -- LEGACY:38-40.
@@ -174,6 +176,20 @@ M.AH_INTERVAL = AH_INTERVAL
 
 local function note(hex, text)
   buffer.color_print(nil, hex, text)
+end
+
+-- A failed persistence attempt blocks even ordinary buys until explicit reset.
+local function replacement_save(ah)
+  local ok, result, err = pcall(save)
+  if ok and result ~= false and err == nil then return true end
+  replacement_save_failed[ah.replace] = true
+  -- Retain an idle/configuration failure across reloads if the halt save succeeds.
+  ah.replace.in_flight = ah.replace.in_flight or { phase = "halted" }
+  replace.cancel(ah.replace, "persistence failed; inspect server state before reset")
+  ah.status = "replacement persistence failed: " .. tostring(ok and (err or result) or result)
+  note("FF0000", "[Auto-Herd] " .. ah.status .. "; NO SEND; explicit reset required")
+  pcall(save) -- best effort to retain the halt, never permission to send
+  return false
 end
 
 -- LEGACY:42.
@@ -275,6 +291,13 @@ function M.settings()
     S.autoherd = ah
   end
   local ah = S.autoherd
+  if not replacement_initialized[ah.replace] then
+    ah.replace = replace.settings(ah.replace)
+    replacement_initialized[ah.replace] = true
+    local restored = replace.busy(ah.replace)
+    replace.recover(ah.replace)
+    if restored then replacement_save(ah) end
+  end
   if ah.buildings == nil then ah.buildings = {} end
   if ah.log == nil then ah.log = {} end
   -- Default per-building config: enabled, target head (0 = breed toward
@@ -286,6 +309,78 @@ function M.settings()
   end
   return ah
 end
+
+-- Read-only settings view: forecasts must not initialize/recover/save live jobs.
+local function preview_settings()
+  local ah = {}
+  for k, v in pairs(DEFAULTS) do ah[k] = v end
+  for k, v in pairs(S.autoherd or {}) do ah[k] = v end
+  ah.replace = replace.settings(ah.replace)
+  ah.buildings = ah.buildings or {}
+  return ah
+end
+
+-- Raw records deliberately retain missing/invalid values for fail-closed validation.
+function M.replacement_context()
+  local ah = preview_settings()
+  local prices = {}
+  for _, good in ipairs({ "mutton", "beef", "poultry", "pork", "horsemeat", "wool", "milk", "eggs" }) do
+    local sell, lin, demand = market.best_sell_of(good)
+    local row = lin and S.trade_goods and S.trade_goods[lin] and S.trade_goods[lin][good]
+    if row then prices[good] = { sell = sell, demand = demand, at = row._received_at } end
+  end
+  local buy, lin, supply = market.best_buy_of("grain")
+  local row = lin and S.trade_goods and S.trade_goods[lin] and S.trade_goods[lin].grain
+  if row then prices.grain = { buy = buy, supply = supply, at = row._received_at } end
+  return { now = os.time(), connected = mud ~= nil and type(mud.connected) == "function" and mud.connected() == true,
+    master_enabled = page_opts.get("auto_herd") == true,
+    epoch = S.herd_connection_epoch or 0, observed = S.herd_observed or {},
+    production = S.production,
+    herds = S.herds, lmarket = S.lmarket, lpending = S.lpending,
+    bqueue = S.bqueue, bqueue_used = S.bqueue_used, bqueue_max = S.bqueue_max,
+    daler = S.daler, buildings = S.buildings, reserve = ah.reserve, global_keep = ah.keep,
+    quality_margin = ah.quality_margin, weights = GOAL_W[ah.goal],
+    building_settings = ah.buildings, prices = prices }
+end
+
+-- Transient attempt time, not a receipt or persisted setting. Failed sends also
+-- consume the interval so a broken sender cannot cause a retry storm.
+local refresh_attempt_at
+local REFRESH_HINT = "Use /vik herd refresh; allow ~15 seconds for livestock/city and up to ~5 minutes for the trade grid."
+function M.refresh(automatic)
+  local function report(ok, text)
+    if not automatic then note("FFA500", "[Auto-Herd] " .. text) end
+    return ok, text
+  end
+  if not mud or type(mud.connected) ~= "function" or mud.connected() ~= true then
+    return report(false, "refresh blocked: not connected")
+  end
+  -- Explicit /vik herd refresh must bootstrap missing data after reload.
+  -- Only automatic requests require the connection-local Viking livestock latch.
+  if automatic and not S.livestock_seen then
+    return report(false, "refresh blocked: waiting for Viking livestock data on this connection")
+  end
+  if not gmcp or type(gmcp.enabled) ~= "function" then
+    return report(false, "refresh blocked: GMCP unavailable")
+  end
+  local ok, enabled = pcall(gmcp.enabled)
+  if not ok or enabled ~= true or type(gmcp.send) ~= "function" then
+    return report(false, "refresh blocked: GMCP disabled or sender unavailable")
+  end
+  local now, interval = os.time(), automatic and 120 or 60
+  if refresh_attempt_at and now - refresh_attempt_at < interval then
+    return report(false, "refresh debounced; wait before requesting again")
+  end
+  refresh_attempt_at = now
+  -- Add preserves other subscriptions. The server invalidates delta caches,
+  -- but retains its panel schedule; success here is not data confirmation.
+  local sent, result = pcall(gmcp.send, "Core.Supports.Add", { "Guild 1" })
+  if not sent or result ~= true then
+    return report(false, "refresh request failed; no fresh data confirmed")
+  end
+  return report(true, "Guild refresh requested (not confirmed). " .. REFRESH_HINT)
+end
+
 
 -- LEGACY:441-448 (ah_bldg_alias). Map rebuilt per call, matching LEGACY's
 -- own shape exactly (a local table literal inside the function body).
@@ -307,7 +402,7 @@ local function usage()
   note("FF0000", "[Auto-Herd] usage: aherd on|off | goal <yield|fert|con|hard|vigor|balanced> | "
     .. "reserve <n> | keep <n> | gen <n|auto> | age <n|off> | trait <any|off|prolific|hardy|bountiful|purebred> | stock on|off | cross on|off | quality on|off | "
     .. "feed on|off | feedticks <n> | margin <n> | bldg <name> on|off|target <n>|keep <n> | "
-    .. "debug on|off | log [clear] | status")
+    .. "debug on|off | log [clear] | status | refresh | forecast | replace on|off|status|reset|preview | model <building> output N|share 0..1")
 end
 
 -- LEGACY:450-467 (ah_status_line).
@@ -371,6 +466,9 @@ end
 -- missing the table. pages/livestock.lua deliberately does NOT clamp -- see
 -- market.M.HERD_CAP.
 local function cap_for(bldg, tier)
+  local herd = S.herds and S.herds[bldg]
+  if herd and herd.management_present and not herd.management then return 0 end
+  if herd and herd.management then return herd.management.cap end
   local t = market.HERD_CAP[bldg]
   if not t then return 0 end
   if tier < 1 then tier = 1 elseif tier > 5 then tier = 5 end
@@ -383,11 +481,12 @@ end
 -- LEGACY's own words. This is the pending-delivery access check, and all
 -- three buy branches below apply it.
 local function pending_head(bid)
+  local herd = S.herds and S.herds[bid]
   local n = 0
   for _, p in ipairs(S.lpending or {}) do
     if p.bldg == bid then n = n + num(p.count) end
   end
-  return n
+  return math.max(n, herd and herd.management and herd.management.pending or 0)
 end
 
 -- PEN-FULL LATCH (not in LEGACY). The planner's own space check is
@@ -462,10 +561,62 @@ local function warehouse_amount(good)
   return market.wh_amount_of(good)
 end
 
+local function enabled_owned(ah)
+  local owned = {}
+  for _, b in ipairs(LIVE_BLDGS) do
+    local bc = ah.buildings and ah.buildings[b]
+    if bc == nil then bc = {} end -- Read-only equivalent of per-pen defaults.
+    if owns(b) and bc and bc.enabled ~= false then owned[#owned + 1] = b end
+  end
+  return owned
+end
+
+-- Pure shared feed assessment: advisory for ordinary purchases, a hard gate
+-- for NEW replacement jobs only. Never interrupt a job restoring culled heads.
+local function feed_warning(ah, owned)
+  if not ah.feed_guard then return nil end
+  owned = owned or enabled_owned(ah)
+  if #owned == 0 then return nil end
+  local head = 0
+  local f = S.lfeed
+  if f and num(f.head) > 0 then
+    head = num(f.head)
+  else
+    for _, b in ipairs(owned) do
+      local h = S.herds and S.herds[b]
+      if h then head = head + num(h.head) end
+    end
+  end
+  if head > 0 then
+    -- Observed grain is the whole city's per-tick NEED, not stock. feed_draw
+    -- prefers it to the ceil(head / 8) fallback; warehouse_amount reads STOCK.
+    local per_tick = market.feed_draw(head)
+    local need = per_tick * math.max(1, num(ah.feed_ticks))
+    local grain = warehouse_amount("grain")
+    if grain < need then
+      return string.format(
+        "feed low: %d grain, herds need %d/tick (%d buffer) - stock grain!",
+        grain, per_tick, need)
+    end
+  end
+end
+
+function M.replacement_preview()
+  local ctx, ah = M.replacement_context(), preview_settings()
+  local p, reason, details = replace.preview(ctx, ah.replace)
+  -- Execution context is separate from candidate eligibility and its reasons.
+  return p, reason, details, feed_warning(ah)
+end
+
 -- LEGACY:148 (score_stats). Works on a herd record and a market record
 -- alike: handlers/livestock.lua gives both the same five stat field names
 -- (hard/fert/yield/vigor/con).
 local function score_stats(s, w)
+  if s.management then
+    local stats = s.management.stats
+    return (stats.hard * w.hard + stats.fert * w.fert + stats.yield * w.yield
+      + stats.vigor * w.vigor + stats.con * w.con) / 100
+  end
   return num(s.hard) * w.hard + num(s.fert) * w.fert + num(s.yield) * w.yield
        + num(s.vigor) * w.vigor + num(s.con) * w.con
 end
@@ -526,9 +677,8 @@ end
 -- `"price": price * count`, a LOT TOTAL with the count >= 3 bulk discount
 -- already folded into the per-head price it multiplied.
 --
--- `buy_cmd` below never passes a count argument, so cmd/vlivestock.c's do_buy
--- takes `buy_count = lot_count` and charges the whole lot -- exactly
--- `m.price`. Nothing further to compute.
+-- Legacy buys pass no count and charge the whole lot, m.price. Protected
+-- offers instead use their exact unit price and the selected partial count.
 --
 -- HISTORY, because this line has now been wrong in both directions. This port
 -- first gated on `price` and then on `price * count`, the latter because the
@@ -542,31 +692,74 @@ end
 -- step: gating too low means one refused buy, which drops the listing and
 -- moves on rather than wedging; gating too high just skips an affordable lot.
 local function lot_cost(m)
+  if m.buy_count then return m.buy_count * m.unit_price end
   return num(m.price)
 end
 
--- LEGACY:169 (best_listing). Best AFFORDABLE listing of `species`, optionally
--- requiring a breed different from `avoid_breed` and/or a score at or above
--- `min_score`, scored by the active goal. The server already gates and scales
--- each village pool by reputation, and this scans every village, so taking
--- the top-scored listing needs no separate rep filter (LEGACY:161-166).
--- `m.trait ~= "0"` is kept even though handlers/livestock.lua already
--- normalises "0" to nil: the check is free, and it keeps this function honest
--- against a hand-built record (the tests pass trait = "0" literally).
-local function best_listing(ah, species, budget, avoid_breed, min_score)
+-- New management confirms hundredth-point averaging; legacy remains whole-point.
+-- Quotes have no herd head/cap/pending identity and cannot authorize a buy.
+-- Forecast from the current herd and exact chosen count, excluding random bonuses.
+local function arrival_score(herd, m, cap, w)
+  local head = num(herd.head)
+  local count = m.buy_count or math.min(num(m.count), cap - head)
+  if count <= 0 then return score_stats(herd, w) end
+  local score = 0
+  local scale = herd.management and 100 or 1
+  for stat, weight in pairs(w) do
+    local before = herd.management and herd.management.stats[stat] or num(herd[stat])
+    score = score + math.floor((before * head + num(m[stat]) * scale * count)
+      / (head + count)) * weight
+  end
+  return score / scale
+end
+
+local function has_trait(herd)
+  return herd and herd.trait and herd.trait ~= "" and tostring(herd.trait) ~= "0"
+end
+
+-- Only the complete server history proves first introduction. Neither the
+-- primary breed nor hv (even zero) tells us which older bloodlines persist.
+local function fresh_breed(herd, breed)
+  if type(herd.breeds) ~= "table" or type(breed) ~= "string" or breed == "" then
+    return false
+  end
+  if breed == herd.breed then return false end
+  for _, known in ipairs(herd.breeds) do
+    if known == breed then return false end
+  end
+  return true
+end
+
+-- Eligibility uses raw stats; trait preference only ranks eligible lots and
+-- only when the herd can inherit a trait (the server never replaces one).
+local function best_listing(ah, species, budget, herd, eligible)
   local w = GOAL_W[ah.goal] or GOAL_W.balanced
   local best, best_score
   each_listing(function(m)
-    if m.species == species and lot_cost(m) <= budget then
-      if not (avoid_breed and m.breed == avoid_breed) then
+    if m.metadata_present or (herd and herd.management) then
+      local mg = herd and herd.management
+      -- Management confirms the upgraded schema even when the frame budget
+      -- omits every optional offer field. Never downgrade to an unprotected buy.
+      if not mg or m.offer_valid == false or not m.token or not m.unit_price or m.unit_price <= 0
+          or not m.available then return end
+      local count = math.min(num(m.count), m.available, mg.free,
+        math.floor(budget / m.unit_price))
+      if count <= 0 then return end
+      local sized = {}
+      for k, v in pairs(m) do sized[k] = v end
+      sized.buy_count = count
+      m = sized
+    end
+    if m.species == species and num(m.count) > 0 and lot_cost(m) <= budget then
+      if not eligible or eligible(m) then
         local sc = score_stats(m, w)
         -- Trait preference: strongly reward a rare-trait animal so the
         -- planner grabs the bloodline while one is on the market.
         local pref = ah.trait_pref or "any"
-        if pref ~= "off" and m.trait and m.trait ~= "0" then
+        if not has_trait(herd) and pref ~= "off" and has_trait(m) then
           if pref == "any" or pref == m.trait then sc = sc + AH_TRAIT_BONUS end
         end
-        if (not min_score or sc >= min_score) and (not best or sc > best_score) then
+        if not best or sc > best_score then
           best, best_score = m, sc
         end
       end
@@ -575,8 +768,8 @@ local function best_listing(ah, species, budget, avoid_breed, min_score)
   return best, best_score
 end
 
--- LEGACY:192 (buy_cmd), format string at LEGACY:195. THE ONLY command form
--- this module ever builds, anywhere: `vlivestock buy <lineage_token> <id>`.
+-- LEGACY:192 (buy_cmd), extended with explicit count + offer fingerprint.
+-- This is the only command builder; legacy offers retain whole-lot semantics.
 -- The wire id is 1-BASED while the record's `idx` is the server's 0-based
 -- pool index, hence the +1. An unknown lineage id returns nil and every
 -- caller treats nil as "no action" -- a half-built command is never sent.
@@ -588,6 +781,9 @@ end
 local function buy_cmd(m)
   local tok = LIN_TOKENS[num(m.lin)]
   if not tok then return nil end
+  if m.buy_count and m.token then
+    return string.format("vlivestock buy %s %d %d %s", tok, num(m.idx) + 1, m.buy_count, m.token)
+  end
   return string.format("vlivestock buy %s %d", tok, num(m.idx) + 1)
 end
 
@@ -600,9 +796,8 @@ end
 --   1. owned + enabled  -- the `owned` list below; nothing past it can even
 --      name a building the player does not own, or one the user disabled.
 --   2. budget           -- `budget = S.daler - reserve`, and each of the
---      three buy branches is gated on `budget > 0`; best_listing() then only
---      ever returns a listing whose WHOLE LOT (lot_cost: price x count, the
---      figure the server's own precondition uses) is <= budget.
+--      three buy branches is gated on `budget > 0`; best_listing() returns
+--      only affordable legacy lots or exact reserve-limited protected counts.
 --   3. herd space       -- `head + pending_head(b) < cap_for(b, tier)`.
 --   4. pending delivery -- pending_head(b) is added to head in all three
 --      branches, so a delivery already on the road blocks a re-buy.
@@ -622,13 +817,7 @@ function M.plan()
   local budget = num(S.daler) - num(ah.reserve)
 
   -- Access check 1: owned livestock buildings that are also enabled.
-  local owned = {}
-  for _, b in ipairs(LIVE_BLDGS) do
-    local bc = ah.buildings and ah.buildings[b]
-    if owns(b) and bc and bc.enabled ~= false then
-      owned[#owned + 1] = b
-    end
-  end
+  local owned = enabled_owned(ah)
   if #owned == 0 then
     return nil, "no husbandry buildings owned (or all disabled)"
   end
@@ -642,37 +831,7 @@ function M.plan()
   -- toggle grants, and no test in this plan would have caught it. The
   -- status text therefore always takes LEGACY's own un-queued branch
   -- (" - stock grain!").
-  if ah.feed_guard then
-    local head = 0
-    local f = S.lfeed
-    if f and num(f.head) > 0 then
-      head = num(f.head)
-    else
-      for _, b in ipairs(owned) do
-        local h = S.herds and S.herds[b]
-        if h then head = head + num(h.head) end
-      end
-    end
-    if head > 0 then
-      -- market.feed_draw prefers the SERVER's own per-tick figure (S.lfeed.grain)
-      -- whenever it has arrived, and that figure is the whole city's, not this
-      -- caller's. So the `head` passed here only ever selects the
-      -- ceil(head / 8) fallback used before the LFEED key lands -- it does NOT
-      -- scope the result to owned buildings, which an earlier comment here
-      -- claimed. In the branch that matters live (grain > 0, i.e. always once
-      -- Guild.Livestock has arrived) the planner and pages/livestock.lua's Feed
-      -- section get the identical figure, which is the point of sharing it.
-      local per_tick = market.feed_draw(head)
-      local need = per_tick * math.max(1, num(ah.feed_ticks))
-      local grain = warehouse_amount("grain")   -- STOCK, not S.lfeed.grain
-      if grain < need then
-        ah.status = string.format(
-          "feed low: %d grain, herds need %d/tick (%d buffer) - stock grain!",
-          grain, per_tick, need)
-        -- Not a vlivestock action; fall through to other planning this tick.
-      end
-    end
-  end
+  ah.status = feed_warning(ah, owned) or ""
 
   -- --- 2. Stock / restock: seed EMPTY buildings, refill below target. ----
   -- LEGACY:256. This is what makes "turn it on" actually acquire animals:
@@ -690,16 +849,16 @@ function M.plan()
       -- grows the herd the rest of the way.
       local target  = (num(bc.target) > 0) and num(bc.target) or nil
       local desired = target or math.min(cap, math.max(1, num(ah.keep)))
-      if head < desired and head < cap and not pen_full(b) then
+      if head < desired and head < cap and pending_head(b) == 0 and not pen_full(b) then
         local species = BLDG_SPECIES[b]
-        local m = best_listing(ah, species, budget, nil, nil)
+        local m = best_listing(ah, species, budget, herd, nil)
         if m then
           local cmd = buy_cmd(m)
           if cmd then
             return { kind = "buy", cmd = cmd,
               lin = num(m.lin), idx = num(m.idx),
               why = string.format("stock %s: buy %s x%d into %s (%d/%d) for %dd",
-                species, (m.breed ~= "" and m.breed) or "?", num(m.count), b,
+                species, (m.breed ~= "" and m.breed) or "?", m.buy_count or num(m.count), b,
                 head, desired, lot_cost(m)) }, nil
           end
         else
@@ -719,7 +878,7 @@ function M.plan()
       local cap  = cap_for(b, bldg_tier(b))
       -- Access checks 3 + 4.
       if herd and num(herd.head) > 0 and (num(herd.head) + pending_head(b)) < cap
-         and not pen_full(b) then
+         and pending_head(b) == 0 and not pen_full(b) then
         local thresh = (num(ah.gen_refresh) > 0) and num(ah.gen_refresh)
                         or inbreed_threshold(herd)
         local age_thresh = (num(ah.age_refresh) > 0) and num(ah.age_refresh) or nil
@@ -740,15 +899,30 @@ function M.plan()
           or (age_thresh and num(herd.age_ticks) >= age_thresh)
         if needs_blood then
           local species = BLDG_SPECIES[b]
-          local m = best_listing(ah, species, budget, herd.breed, nil)
+          -- First introduction can earn hybrid rewards without a raw gain,
+          -- but never bank on random vigor to offset a predicted stat loss.
+          local current = score_stats(herd, w)
+          local m = best_listing(ah, species, budget, herd, function(listing)
+            if herd.management then
+              local count = listing.buy_count or math.min(num(listing.count), cap - num(herd.head))
+              local gen = herd.management.gen_x100
+              if math.floor(gen * num(herd.head) / (num(herd.head) + count)) >= gen then return false end
+              for stat in pairs(w) do
+                if num(listing[stat]) < num(herd[stat]) then return false end
+              end
+              return true
+            end
+            return fresh_breed(herd, listing.breed)
+              and arrival_score(herd, listing, cap, w) >= current
+          end)
           if m then
             local cmd = buy_cmd(m)
             if cmd then
               local age_note = (age_thresh and num(herd.age_ticks) >= age_thresh)
-                and string.format(", age %d", num(herd.age_ticks)) or ""
+                and string.format(", age %.2f", num(herd.age_ticks)) or ""
               return { kind = "buy", cmd = cmd,
                 lin = num(m.lin), idx = num(m.idx),
-                why = string.format("crossbreed %s: +%s into %s (gen %d, %d sterile%s) for %dd",
+                why = string.format("crossbreed %s: +%s into %s (gen %.2f, %d sterile%s) for %dd",
                   species, (m.breed ~= "" and m.breed) or "?", b, num(herd.gen),
                   num(herd.sterile), age_note, lot_cost(m)) }, nil
             end
@@ -765,12 +939,15 @@ function M.plan()
       local cap  = cap_for(b, bldg_tier(b))
       -- Access checks 3 + 4. (LEGACY does not require head > 0 in this
       -- branch, unlike branch 3 -- ported as written.)
-      if herd and (num(herd.head) + pending_head(b)) < cap and not pen_full(b) then
+      if herd and (num(herd.head) + pending_head(b)) < cap
+         and pending_head(b) == 0 and not pen_full(b) then
         local species = BLDG_SPECIES[b]
-        -- Only buy if a listing beats the herd's weighted average by the
-        -- configured margin -- best_listing's min_score does the rejecting.
-        local floor = score_stats(herd, w) + num(ah.quality_margin)
-        local m = best_listing(ah, species, budget, nil, floor)
+        local current = score_stats(herd, w)
+        local floor = current + num(ah.quality_margin)
+        local m = best_listing(ah, species, budget, herd, function(listing)
+          return score_stats(listing, w) >= floor
+            and arrival_score(herd, listing, cap, w) > current
+        end)
         if m then
           local cmd = buy_cmd(m)
           if cmd then
@@ -813,7 +990,22 @@ function M.plan()
   if not any_data then
     return nil, "no livestock data yet - buy stock via 'vlivestock market'"
   end
-  return nil, "herds steady - nothing to do"
+  local full, pending = 0, 0
+  for _, b in ipairs(owned) do
+    local herd = S.herds and S.herds[b]
+    local incoming = pending_head(b)
+    if incoming > 0 then pending = pending + 1 end
+    if (herd and num(herd.head) or 0) + incoming >= cap_for(b, bldg_tier(b))
+       or pen_full(b) then full = full + 1 end
+  end
+  if full == #owned then
+    return nil, "husbandry pens full (including deliveries) - no room to improve; no automatic slaughter"
+  end
+  if pending > 0 then
+    return nil, "waiting for livestock deliveries; no affordable beneficial options in other pens"
+  end
+  if budget <= 0 then return nil, "no livestock budget above reserve" end
+  return nil, "no affordable beneficial livestock options - quality needs a rounded stat gain; crossbreed needs verified new blood without rounded stat loss"
 end
 
 -- LEGACY:366 (ah_sm). Paced executor state: each vlivestock action is a
@@ -887,15 +1079,38 @@ end
 -- send nothing; on: the same state sends exactly one buy) precisely because
 -- a dead gate would otherwise ship green.
 function M.tick()
+  local ah = M.settings()
+  local ctx = M.replacement_context()
+  if replace.busy(ah.replace) and (not ctx.master_enabled or not ctx.connected) then
+    replace.cancel(ah.replace, not ctx.connected and "disconnected; explicit reset required" or "master off; explicit reset required")
+    replacement_save(ah)
+  end
+  if replacement_save_failed[ah.replace] then return end
   if not page_opts.get("auto_herd") then
     ah_sm.phase = "idle"
     return
   end
-  if not mud.connected() then
+  if not ctx.connected then
     local ah = M.settings(); ah.status = "not connected"
     return
   end
-  local now = os.time()
+  local now = ctx.now
+
+  -- Existing jobs must observe stale data/epoch changes before ordinary gates.
+  if replace.busy(ah.replace) then
+    local action, status = replace.step(ctx, ah.replace)
+    ah.status = "replacement: " .. tostring(status.reason or status.phase)
+    if not replacement_save(ah) then return end
+    if action then
+      local ok, result = pcall(mud.send, action.cmd)
+      if not ok or result == false then
+        replace.cancel(ah.replace, "send failed; inspect server state before reset")
+        replacement_save(ah)
+        note("FF0000", "[Auto-Herd] replacement send failed; explicit reset required")
+      end
+    end
+    return
+  end
 
   -- Reconnect settling hold, the same gate autotrader/plan.lua:287 applies to
   -- cart dispatch. init.lua's M.on_connect sets S.at_hold_until on every
@@ -960,7 +1175,33 @@ function M.tick()
 
   local ah = M.settings()
   ah.last = now
+  -- Busy jobs were handled above. Check feed before step can reserve budget
+  -- or create a cull marker; on shortage retain ordinary planning/warn throttle.
+  if ah.replace.enabled and not feed_warning(ah) then
+    local action, status = replace.step(ctx, ah.replace)
+    if action or replace.busy(ah.replace) then
+      ah.status = "replacement: " .. tostring(status.reason or status.phase)
+      if not replacement_save(ah) then return end
+      if action then
+        local ok, result = pcall(mud.send, action.cmd)
+        if not ok or result == false then
+          replace.cancel(ah.replace, "send failed; inspect server state before reset")
+          replacement_save(ah)
+          note("FF0000", "[Auto-Herd] replacement send failed; explicit reset required")
+        end
+      end
+      return
+    end
+  end
+  -- Only resync when both planners have no command to issue and no local or
+  -- server job is outstanding. Preview itself remains strictly read-only.
   local action, status = M.plan()
+  if not action and ah.replace.enabled and replace.status(ah.replace).phase == "idle"
+      and ah_sm.phase == "idle" and not next(ctx.lpending or {})
+      and not next(ctx.bqueue or {}) and ctx.bqueue_used == 0 then
+    local preview, reason = M.replacement_preview()
+    if not preview and tostring(reason):find("stale", 1, true) then M.refresh(true) end
+  end
   -- `action.kind == "buy" and action.cmd` is belt-and-braces: M.plan only
   -- ever returns kind "buy" with a non-nil cmd (buy_cmd's nil result is
   -- filtered inside every branch). Checked anyway -- this is the one line in
@@ -1061,15 +1302,149 @@ M.triggers = {
 -- viking_aherd_menu_pick). See the module header for every adaptation.
 -- ---------------------------------------------------------------------------
 
+local function replacement_status(ah)
+  local s = replace.status(ah.replace)
+  note("FFA500", "[Auto-Herd] replacement " .. (ah.replace.enabled and "ON (irreversible slaughter)" or "off")
+    .. " | " .. s.phase .. " | " .. (s.reason or "")
+    .. " | maxcost " .. tostring(ah.replace.max_cost) .. " dailycost " .. tostring(ah.replace.daily_cost)
+    .. " dailycull " .. tostring(ah.replace.daily_cull) .. " maxcull " .. tostring(ah.replace.max_cull)
+    .. " keep " .. tostring(ah.replace.min_keep) .. " minprofit " .. tostring(ah.replace.min_profit)
+    .. " horizon " .. tostring(ah.replace.horizon_ticks) .. " gap " .. tostring(ah.replace.gap_ticks)
+    .. " overhead " .. tostring(ah.replace.overhead))
+end
+
+local function price_stream_diagnostic()
+  -- Load lazily: standalone consumers may not provide the trade handler's UI dependencies.
+  local ok, trade = pcall(require, "handlers.trade")
+  local status = {}
+  if ok and type(trade) == "table" and type(trade._tgoods_status) == "function" then
+    local read_ok, value = pcall(trade._tgoods_status)
+    if read_ok and type(value) == "table"
+        and value.connection_epoch == (S.herd_connection_epoch or 0) then status = value end
+  end
+  local function finite(n)
+    return type(n) == "number" and n == n and n > -math.huge and n < math.huge
+  end
+  local function count(n, fallback)
+    return finite(n) and n >= 0 and string.format("%.0f", math.min(1e9, math.floor(n))) or fallback
+  end
+  local progress = count(status.received, "0") .. "/" .. count(status.expected, "?")
+  local now, last = os.time(), nil
+  local observed = (S.herd_observed or {}).prices
+  -- Legacy receipts and receipts surviving a handler reload are also proof.
+  for _, receipt in pairs({ status = status.last_complete_at, observed = type(observed) == "table" and observed.at or nil }) do
+    if finite(receipt) and receipt <= now and (not last or receipt > last) then last = receipt end
+  end
+  local text = "price stream: "
+  if last then
+    text = text .. "last complete grid " .. count(now - last, "?") .. "s ago"
+    if not status.complete then text = text .. "; receiving " .. progress end
+  else
+    text = text .. progress .. " lineages; waiting for first complete grid"
+  end
+  if progress == "0/?" then text = text .. "; waiting for server's next cycle (300s)" end
+  note("FFA500", "  " .. text)
+end
+
+local function replacement_config(rest, ah)
+  if rest == "forecast" or rest == "replace preview" then
+    local p, reason, details, feed = M.replacement_preview()
+    if feed then
+      note("FFA500", "[Auto-Herd] new replacement execution blocked: " .. feed)
+    end
+    if not p then
+      note("FFA500", "[Auto-Herd] replacement preview: " .. tostring(reason))
+      if tostring(reason):find("stale/missing prices", 1, true) == 1 then price_stream_diagnostic() end
+      for _, detail in ipairs(details or {}) do
+        note("FFA500", "  " .. detail.building .. ": " .. detail.reason)
+      end
+      if tostring(reason):find("missing server", 1, true) then return true end
+      if tostring(reason):find("stale", 1, true) or tostring(reason):find("missing", 1, true) then
+        note("FFA500", "  " .. REFRESH_HINT)
+      end
+
+    else
+      note("FFA500", string.format("[Auto-Herd] preview ONLY: %s replace %d; purchase %g; gross opportunity lower %g; advisory high %g (%s)",
+        p.building, p.count, p.cost, p.forecast.net_low, p.forecast.net_high, p.model_source))
+      note("FFA500", "  Sale transport/risk excluded; not guaranteed profit. Execution separately requires replace overhead N, even when already enabled.")
+      for _, text in ipairs(p.forecast.assumptions) do note("808080", "  " .. text) end
+      for _, text in ipairs(p.forecast.excluded) do note("808080", "  Excludes: " .. text) end
+    end
+    return true
+  end
+  if rest == "replace status" then replacement_status(ah); return true end
+  if rest == "replace on" then
+    if replace.busy(ah.replace) or replacement_save_failed[ah.replace] then
+      note("FF0000", "[Auto-Herd] inspect server state and explicitly reset the replacement halt first")
+      return true
+    end
+    ah.replace.enabled = true
+    note("FF0000", "[Auto-Herd] replacement ON authorizes IRREVERSIBLE SLAUGHTER on a later tick, only with master Auto-Herd ON. No command sent now.")
+  elseif rest == "replace off" then
+    replace.cancel(ah.replace, "replacement off; inspect server state before reset")
+  elseif rest == "replace reset" then
+    if replace.busy(ah.replace) and replace.status(ah.replace).phase ~= "halted" then
+      note("FF0000", "[Auto-Herd] active replacement: use replace off, inspect herd/queue/deliveries manually, then reset")
+      return true
+    end
+    replace.reset(ah.replace)
+    replacement_save_failed[ah.replace] = nil
+    note("FFA500", "[Auto-Herd] reset acknowledged: you must manually inspect herd/queue/deliveries; budgets retained, replacement OFF")
+  elseif rest:match("^replace%s") or rest:match("^model%s") then
+    if replace.busy(ah.replace) then
+      note("FF0000", "[Auto-Herd] replacement busy; off, inspect, reset before changing its model/limits")
+      return true
+    end
+    local key, text = rest:match("^replace%s+(%a+)%s+(%S+)$")
+    local limits = { maxcost = "max_cost", dailycost = "daily_cost", dailycull = "daily_cull",
+      maxcull = "max_cull", keep = "min_keep", minprofit = "min_profit", horizon = "horizon_ticks",
+      gap = "gap_ticks", overhead = "overhead" }
+    local b, field, value = rest:match("^model%s+(%a+)%s+(%a+)%s+(%S+)$")
+    b = bldg_alias(b)
+    local n = tonumber(text or value)
+    local valid = n and n == n and math.abs(n) <= 1000000000
+    if key and limits[key] then
+      valid = valid and (key == "minprofit" or n >= 0)
+        and (key == "minprofit" or key == "overhead" or n % 1 == 0)
+      if key == "horizon" then valid = valid and n >= 1 and n >= ah.replace.gap_ticks end
+      if key == "gap" then valid = valid and n <= ah.replace.horizon_ticks end
+      if valid then ah.replace[limits[key]] = n end
+    elseif b and (field == "output" or field == "share") then
+      valid = valid and n >= 0 and (field ~= "share" or n <= 1)
+      if valid then
+        ah.replace.models[b] = ah.replace.models[b] or {}
+        ah.replace.models[b][field == "output" and "production_per_tick" or "scaled_share"] = n
+      end
+    else valid = false end
+    if not valid then
+      note("FF0000", "[Auto-Herd] replace on|off|status|reset|preview; replace maxcost|dailycost|dailycull|maxcull|keep|minprofit|horizon|gap|overhead N; model <building> output N|share 0..1. Finite magnitude <=1e9; counts/ticks/cost limits integers; gap <= horizon.")
+      return true
+    end
+  else return false end
+  replacement_save(ah)
+  return true
+end
+
 -- LEGACY:476-544 (ah_config).
 function M.config(rest)
-  local ah = M.settings()
   rest = (rest or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+  if rest == "refresh" then M.refresh(); return end
+  if rest == "forecast" or rest == "replace preview" then
+    replacement_config(rest, preview_settings())
+    return
+  end
+  local ah = M.settings()
+
+  if replacement_config(rest, ah) then return end
 
   if rest == "on" then
     page_opts.set("auto_herd", true); note("FFA500", "[Auto-Herd] ON.")
   elseif rest == "off" then
     page_opts.set("auto_herd", false); note("FFA500", "[Auto-Herd] OFF.")
+    if replace.busy(ah.replace) then
+      replace.cancel(ah.replace, "master off; inspect server state before reset")
+      replacement_save(ah); return
+    end
   elseif rest == "stock on" then
     ah.restock = true; note("FFA500", "[Auto-Herd] stock/restock ON.")
   elseif rest == "stock off" then
@@ -1105,6 +1480,7 @@ function M.config(rest)
     end
   elseif rest == "" or rest == "status" then
     status_line(ah)
+    replacement_status(ah)
   else
     local goal = rest:match("^goal%s+(%a+)$")
     if goal and GOAL_W[goal] then
@@ -1212,6 +1588,9 @@ function M.menu_items()
     { id = "cross", value = "cross", label = "Crossbreed (fresh blood): " .. (ah.crossbreed and "on" or "off") },
     { id = "quality", value = "quality", label = "Quality buy-ins: " .. (ah.buy_quality and "on" or "off") },
     { id = "feed", value = "feed", label = "Feed guard: " .. (ah.feed_guard and "on" or "off") },
+    { id = "replace preview", value = "replace preview", label = "Replacement preview (no commands)" },
+    { id = "replace on", value = "replace on", label = "Enable replacement: IRREVERSIBLE SLAUGHTER" },
+    { id = "replace off", value = "replace off", label = "Disable replacement (retain unresolved halt)" },
     { id = "_hdr", value = "_hdr", label = "Per-building (L-click toggles on/off):" },
   }
   local any_bldg = false
@@ -1259,8 +1638,12 @@ end
 -- autoraid.lua's raid target).
 local function menu_pick(id)
   local ah = M.settings()
+  if id:match("^replace ") then
+    M.config(id); M.open_menu(); return
+  end
   if id == "on" then
-    page_opts.set("auto_herd", not page_opts.get("auto_herd"))
+    M.config(page_opts.get("auto_herd") and "off" or "on")
+    M.open_menu(); return
   elseif id == "restock" then
     ah.restock = not ah.restock
   elseif id == "trait" then
@@ -1325,7 +1708,7 @@ end
 
 function M.restore(tbl)
   if not tbl then return end
-  if tbl.autoherd then S.autoherd = tbl.autoherd end
+  if tbl.autoherd then S.autoherd = tbl.autoherd; M.settings() end
 end
 
 return M

@@ -527,6 +527,164 @@ protocol.on_gmcp("Guild.Trade", { guild = "berserker",
                                   blocks = { { good = "foreign", amount = 1 } } })
 check("a foreign guild's frame is dropped", S.blocks.foreign == nil)
 
+-- ---- receipt time is not publication time ----------------------------------
+do
+  local real_time, now = os.time, 20000
+  os.time = function() return now end
+  require("state").reset_connection()
+  local function evidence(key, at, seq)
+    local e = (S.herd_observed or {})[key]
+    return e and e.at == at and e.seq == seq
+  end
+  protocol.on_gmcp("Guild.State", { guild = "viking", daler = 500 })
+  check("daler write records receipt", S.daler == 500 and evidence("daler", 20000, 1))
+  now = 20010
+  trade({ blocks = {} })
+  protocol.on_gmcp("Guild.State", { guild = "viking" })
+  protocol.on_gmcp("Guild.State", { guild = "berserker", daler = 900 })
+  check("absent or foreign daler cannot advance confirmation",
+    S.daler == 500 and evidence("daler", 20000, 1))
+  protocol.on_gmcp("Guild.State", { guild = "viking", daler = 500 })
+  check("identical daler receipt still advances revision", evidence("daler", 20010, 2))
+  protocol.on_gmcp("Guild.State", { guild = "viking", daler = 0 })
+  check("zero daler and same-second writes are confirmed",
+    S.daler == 0 and evidence("daler", 20010, 3))
+
+  tradegoods({ tgoods_1 = { { good = "p", sell = 7 } } })
+  check("legacy price write records row and evidence times",
+    S.trade_goods[1].pork._received_at == 20010 and evidence("prices", 20010, 1))
+  now = 20020
+  tradegoods({ tgoods_5 = { { good = "p", sell = 9 } } })
+  check("legacy price delta preserves untouched lineage receipt",
+    S.trade_goods[1].pork._received_at == 20010
+    and S.trade_goods[5].pork._received_at == 20020 and evidence("prices", 20020, 2))
+  local published = S.trade_goods
+  now = 20030
+  tradegoods({ full = 1, lin = 1, lin_count = 2,
+    goods = { { good = "p", sell = 11 }, { good = "mi", sell = 12 } } })
+  check("incomplete stream cannot refresh published price confirmation",
+    S.trade_goods == published and evidence("prices", 20020, 2))
+  now = 20050
+  tradegoods({ lin = 5, goods = { { good = "p", sell = 13 } } })
+  check("completed stream advances confirmation exactly once", evidence("prices", 20050, 3))
+  check("published prices preserve each frame's original receipt time",
+    S.trade_goods[1].pork.sell == 11 and S.trade_goods[1].pork._received_at == 20030
+    and S.trade_goods[1].milk._received_at == 20030
+    and S.trade_goods[5].pork.sell == 13 and S.trade_goods[5].pork._received_at == 20050)
+  now = 20070
+  tradegoods({ full = 1, lin = 1, lin_count = 2, goods = { { good = "p", sell = 11 } } })
+  check("next incomplete cycle leaves previous row receipts standing",
+    S.trade_goods[1].pork._received_at == 20030
+    and S.trade_goods[5].pork._received_at == 20050 and evidence("prices", 20050, 3))
+  tradegoods({ lin = 5, goods = {} })
+  check("completed cycle timestamps resent rows and clears empty lineage",
+    S.trade_goods[1].pork._received_at == 20070 and next(S.trade_goods[5]) == nil
+    and evidence("prices", 20070, 4))
+  check("price frames cannot refresh daler evidence", evidence("daler", 20010, 3))
+  os.time = real_time
+end
+
+-- ---- read-only, connection-local streamed price progress -------------------
+do
+  local real_time, now, clock_reads = os.time, 30000, 0
+  os.time = function() clock_reads = clock_reads + 1; return now end
+  local state = require("state")
+  state.reset_connection()
+  protocol.reset_connection()
+  local status = trade_mod._tgoods_status
+  local registered = false
+  for key in pairs(trade_mod) do
+    if key == "_tgoods_status" then registered = true end
+  end
+  check("status lookup is callable but invisible to handler registration",
+    type(status) == "function" and not registered
+    and trade_mod._gmcp._tgoods_status == nil)
+
+  local initial = status()
+  check("reconnect status forgets old completed counts and timestamps",
+    initial.received == 0 and initial.expected == nil and not initial.complete
+    and not initial.ever_complete and initial.last_complete_at == nil
+    and initial.last_lin == nil)
+  local published = S.trade_goods
+  local errors = tgoods_errors()
+  tradegoods({ lin = 0, goods = {} })
+  check("reconnect cannot reuse the previous connection lineage count",
+    tgoods_errors() == errors + 1 and status().received == 0
+    and S.trade_goods == published)
+
+  -- Match server paging: goods slices precede the lineage envelope, and full
+  -- repeats on every page of the first lineage, not every lineage of a cycle.
+  for lin = 0, 13 do
+    now = 30000 + lin
+    local full = lin == 0 and 1 or nil
+    tradegoods({ page = 1, pages = 2, full = full,
+      goods = { { good = "p", sell = lin + 1 } } })
+    local fragment = status()
+    check("paged fragment cannot advance lineage progress " .. lin,
+      fragment.received == lin and not fragment.complete
+      and not fragment.ever_complete and fragment.last_complete_at == nil
+      and S.trade_goods == published and S.herd_observed.prices == nil)
+    tradegoods({ page = 2, pages = 2, full = full, lin = lin,
+      lin_count = lin == 0 and 14 or nil,
+      goods = { { good = "mi", sell = lin + 2 } } })
+    local progress = status()
+    check("stream reports received and expected lineages " .. lin,
+      progress.received == lin + 1 and progress.expected == 14
+      and progress.last_lin == lin and progress.complete == (lin == 13))
+    if lin < 13 then
+      check("unfinished cycle never publishes or fabricates completion " .. lin,
+        S.trade_goods == published and S.herd_observed.prices == nil
+        and progress.last_complete_at == nil and not progress.ever_complete)
+    end
+  end
+  local complete = status()
+  check("all fourteen lineages publish once with actual completion time",
+    S.trade_goods ~= published and complete.last_complete_at == 30013
+    and complete.ever_complete and complete.complete and complete.received == 14
+    and S.herd_observed.prices.at == 30013 and S.herd_observed.prices.seq == 1
+    and S.trade_goods[0].pork._received_at == 30000
+    and S.trade_goods[13].milk._received_at == 30013)
+
+  now = 40000
+  local reads = clock_reads
+  complete.received, complete.expected, complete.last_complete_at = 99, 99, now
+  local aged = status()
+  check("status returns detached scalars without sampling time or refreshing evidence",
+    clock_reads == reads and aged.received == 14 and aged.expected == 14
+    and aged.last_complete_at == 30013 and S.herd_observed.prices.at == 30013
+    and aged.pending == nil and aged.seen == nil)
+  published = S.trade_goods
+  tradegoods({ lin = 0, goods = { { good = "p", sell = 20 } } })
+  local pending = status()
+  check("new incomplete cycle preserves evidence of an older complete cycle",
+    pending.received == 1 and pending.expected == 14 and not pending.complete
+    and pending.ever_complete and pending.last_complete_at == 30013
+    and S.trade_goods == published and S.herd_observed.prices.at == 30013)
+
+  state.reset_connection()
+  protocol.reset_connection()
+  local reset = status()
+  check("reconnect during a pending cycle exposes no previous progress",
+    reset.received == 0 and reset.expected == nil and not reset.complete
+    and not reset.ever_complete and reset.last_complete_at == nil
+    and reset.last_lin == nil and reset.connection_epoch ~= pending.connection_epoch)
+  reads = clock_reads
+  status()
+  status()
+  check("reconnect queries do not create timestamps or observations",
+    clock_reads == reads and S.herd_observed.prices == nil)
+  tradegoods({ lin = 1, lin_count = 2, goods = {} })
+  check("new connection starts with only its own first lineage",
+    status().received == 1 and status().expected == 2
+    and status().last_complete_at == nil and S.trade_goods == published)
+  tradegoods({ lin = 2, goods = {} })
+  check("old pending lineages cannot leak into a reconnect commit",
+    status().complete and status().received == 2
+    and S.trade_goods[0] == nil and S.trade_goods[1] ~= nil
+    and S.trade_goods[2] ~= nil and S.herd_observed.prices.seq == 1)
+  os.time = real_time
+end
+
 if failures > 0 then
   print("FAILURES: " .. failures)
   os.exit(1)

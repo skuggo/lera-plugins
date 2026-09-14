@@ -12,6 +12,7 @@
 -- predecessor in this plugin (see the ORDER-array comment near the bottom),
 -- so there is nothing here to zip against a declared field order.
 local S = require("state").S
+local observe = require("herd_observe")
 
 local M = {}
 
@@ -24,20 +25,101 @@ local function trait_or_nil(t)
   return tostring(t)
 end
 
+-- Optional complete bloodline history from newer servers. Invalid or absent
+-- data must remain unknown: an empty/incomplete list would authorize false
+-- "fresh blood" purchases. Do not retain the caller's mutable array.
+local function split(value, sep)
+  if type(value) ~= "string" then return nil end
+  local out = {}
+  for part in (value .. sep):gmatch("(.-)" .. sep) do out[#out + 1] = part end
+  return out
+end
+
+local function integer(value)
+  if type(value) ~= "number" and type(value) ~= "string" then return nil end
+  if type(value) == "string" and not value:match("^%d+$") then return nil end
+  local n = tonumber(value)
+  if not n or n < 0 or n > 2147483647 or n % 1 ~= 0 then return nil end
+  return n
+end
+
+local STAT_KEYS = { "hard", "fert", "yield", "vigor", "con", "quality" }
+local function stats(value)
+  local parts = split(value, ",")
+  if not parts or #parts ~= 6 then return nil end
+  local out = {}
+  for i, key in ipairs(STAT_KEYS) do
+    local n = integer(parts[i])
+    if not n or n > 10000 then return nil end
+    out[key] = n
+  end
+  return out
+end
+
+local function management(value)
+  local p = split(value, ";")
+  if not p or #p ~= 9 then return nil end
+  local out = {}
+  local keys = { "cap", "pending", "free", "protected", "cullable",
+    "auto_slaughter", "age_x100", "gen_x100" }
+  for i, key in ipairs(keys) do
+    out[key] = integer(p[i])
+    if out[key] == nil then return nil end
+  end
+  out.stats = stats(p[9])
+  if not out.stats or out.auto_slaughter > 1 or out.free > out.cap then return nil end
+  return out
+end
+
+local function quote(value)
+  local p = split(value, ";")
+  if not p or #p ~= 8 then return nil end
+  local out = { accepted = integer(p[1]), reason = p[2],
+    before_stats = stats(p[3]), after_stats = stats(p[4]),
+    before_gen_x100 = integer(p[5]), after_gen_x100 = integer(p[6]),
+    new_breed = integer(p[7]), random_bonus_excluded = integer(p[8]) }
+  if not out.accepted or out.reason == "" or not out.before_stats or not out.after_stats
+      or not out.before_gen_x100 or not out.after_gen_x100
+      or not out.new_breed or out.new_breed > 1
+      or not out.random_bonus_excluded or out.random_bonus_excluded > 1 then return nil end
+  return out
+end
+
+local function breed_history(value)
+  if value == "" then return {} end -- explicit complete, empty history
+  if type(value) == "string" then value = split(value, ",") end
+  if type(value) ~= "table" then return nil end
+  local out, seen, count = {}, {}, 0
+  for k, breed in pairs(value) do
+    if type(k) ~= "number" or k < 1 or k % 1 ~= 0
+        or type(breed) ~= "string" or breed == "" then return nil end
+    count = count + 1
+    if not seen[breed] then
+      seen[breed] = true
+      out[#out + 1] = breed
+    end
+  end
+  if count ~= #value then return nil end
+  return out
+end
+
 local HERDS_ORDER = { "bldg", "head", "quality", "gen", "sterile", "hard",
                       "fert", "yield", "vigor", "con", "breed", "hv",
                       "trait", "age_ticks" }
 
 -- LEGACY 2300 (guild_viking.lua, the MIP HERDS branch).
 -- Keyed by building, because every consumer looks a herd up by the building
--- that houses it. Replaced wholesale on each arrival: the server OMITS a
--- building whose head has dropped to 0, so merging would resurrect dead herds.
+-- that houses it. Replaced wholesale on each arrival: older payloads omit
+-- empty herds, while upgraded GMCP includes all owned pens with management,
+-- including head 0. Merging would retain rows no longer reported.
 local function write_herds(value)
+  local received_at = os.time()
   local out = {}
   for _, r in ipairs(value or {}) do
     if r.bldg then
       out[r.bldg] = {
         bldg = r.bldg,
+        _received_at = received_at,
         head = tonumber(r.head) or 0,
         quality = tonumber(r.quality) or 0,
         gen = tonumber(r.gen) or 0,
@@ -50,11 +132,26 @@ local function write_herds(value)
         breed = tostring(r.breed or ""),
         hv = tonumber(r.hv) or 0,
         trait = trait_or_nil(r.trait),
-        age_ticks = tonumber(r.age_ticks) or 0,
+        age_ticks = tonumber(r.age_ticks),
+        breeds = breed_history(r.breeds),
+        management_present = r.management ~= nil,
+        management = management(r.management),
       }
+      local herd = out[r.bldg]
+      local mg = herd.management
+      if mg then
+        -- Head is the row's head, never inferred from capacity or protection.
+        if integer(r.head) == nil or mg.free ~= math.max(0, mg.cap - herd.head - mg.pending) then
+          herd.management = nil
+        else
+          herd.age_ticks, herd.gen = mg.age_x100 / 100, mg.gen_x100 / 100
+          for key, n in pairs(mg.stats) do herd[key] = n / 100 end
+        end
+      end
     end
   end
   S.herds = out
+  observe.record("herds")
   -- The Guild.Livestock arrival latch. gmcp.h's Guild.Livestock comment says
   -- herds is one of the keys ALWAYS sent, even empty, so this writer running
   -- at all is the package having arrived. Auto-Herd gates its spending on it
@@ -94,6 +191,7 @@ local function write_bqueue(parts)
       })
     end
     S.bqueue = out
+    observe.record("bqueue")
   end
 end
 
@@ -125,6 +223,7 @@ local function write_lpending(value)
     })
   end
   S.lpending = out
+  observe.record("pending")
 end
 
 local LFIND_POSTS_ORDER = { "id", "species", "min_quality", "max_price",
@@ -200,7 +299,14 @@ local LMARKET_ORDER = { "lin", "idx", "species", "breed", "count", "price",
                         "hard", "fert", "yield", "vigor", "con", "trait" }
 
 local function build_lmarket_record(r)
+  local valid = integer(r.count) ~= nil and integer(r.idx) ~= nil and integer(r.lin) ~= nil
+  for _, key in ipairs({ "hard", "fert", "yield", "vigor", "con" }) do
+    local n = integer(r[key])
+    if not n or n > 100 then valid = false end
+  end
   return {
+    offer_valid = valid,
+    _received_at = os.time(),
     lin = tonumber(r.lin) or 0,
     idx = tonumber(r.idx) or 0,
     species = tostring(r.species or ""),
@@ -213,6 +319,12 @@ local function build_lmarket_record(r)
     vigor = tonumber(r.vigor) or 0,
     con = tonumber(r.con) or 0,
     trait = trait_or_nil(r.trait),
+    metadata_present = r.unit_price ~= nil or r.available ~= nil or r.token ~= nil or r.quote ~= nil,
+    unit_price = integer(r.unit_price),
+    available = integer(r.available),
+    token = type(r.token) == "string" and #r.token == 32
+      and r.token:match("^%x+$") and r.token or nil,
+    quote = quote(r.quote), -- replacement deliberately clears omitted rotating quotes
   }
 end
 

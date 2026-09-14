@@ -389,6 +389,16 @@ M.on_load()
 gmcp.fire("Guild", { guild = "viking",
                      blocks = { { good = "gmcpwired", amount = 3 } } })
 check("gmcp Guild wiring feeds protocol.on_gmcp", S.blocks.gmcpwired == 3)
+-- Lera invokes the root subscription with the actual sub-package name.
+local saved_market = S.lmarket
+S.lmarket = {}
+gmcp_handlers.Guild("Guild.Livestock", { guild = "viking", full = 1,
+  lmarket_partial = 1, lmarket_13 = { { idx = 0, price = 1313 } } })
+gmcp_handlers.Guild("Guild.Livestock", { guild = "viking", full = 1,
+  lmarket_partial = 1, lmarket_1 = {} })
+check("root Guild registration handles marked Livestock full omissions",
+  S.lmarket[13] and S.lmarket[13][1].price == 1313 and #S.lmarket[1] == 0)
+S.lmarket = saved_market
 
 -- ---- notify: push triggers + countdown_tick (Task 9) -----------------------
 local notify = require("notify")
@@ -1244,8 +1254,34 @@ check("/vik herd bogus: usage message verbatim",
         .. "<any|off|prolific|hardy|bountiful|purebred> | stock on|off | "
         .. "cross on|off | quality on|off | feed on|off | feedticks <n> | "
         .. "margin <n> | bldg <name> on|off|target <n>|keep <n> | "
-        .. "debug on|off | log [clear] | status",
+        .. "debug on|off | log [clear] | status | refresh | forecast | replace on|off|status|reset|preview | model <building> output N|share 0..1",
       printed[1])
+
+do
+  local old_enabled, old_send = gmcp.enabled, gmcp.send
+  local old_seen, old_connected = S.livestock_seen, mud_connected
+  local old_save = require("persist").save
+  local requests, saves = 0, 0
+  gmcp.enabled = function() return true end
+  gmcp.send = function(pkg, data)
+    requests = requests + 1
+    check("herd refresh dispatch uses Add only", pkg == "Core.Supports.Add" and #data == 1 and data[1] == "Guild 1")
+    return true
+  end
+  require("persist").save = function() saves = saves + 1 end
+  S.livestock_seen, mud_connected = false, true
+  local settings, master = S.autoherd, page_opts.get("auto_herd")
+  printed = {}
+  registered_vik.handler("herd refresh", "/vik")
+  check("herd refresh dispatch bootstraps without livestock or settings changes", requests == 1 and saves == 0
+    and not S.livestock_seen and S.autoherd == settings and page_opts.get("auto_herd") == master)
+  check("herd refresh reply is not confirmation", printed[1]:find("not confirmed", 1, true) ~= nil)
+  registered_vik.handler("herd refresh", "/vik")
+  check("herd refresh dispatch debounces", requests == 1)
+  gmcp.enabled, gmcp.send = old_enabled, old_send
+  S.livestock_seen, mud_connected = old_seen, old_connected
+  require("persist").save = old_save
+end
 
 -- ---- /vik herd (bare): opens the settings menu ----------------------------
 S.autoherd = nil

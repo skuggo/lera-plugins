@@ -47,7 +47,8 @@ function M.save()
   local opts = {}
   for _, o in ipairs(page_opts.all()) do opts[o.key] = o.value end
 
-  store.set({
+  -- Native store APIs return false on failure; legacy stubs return nil on success.
+  if store.set({
     price_history = market.snapshot().price_history,
     page_opts = opts,
     page = window.current_page(),
@@ -56,8 +57,12 @@ function M.save()
     autovoyage = av_module().snapshot().autovoyage,
     autoherd = ah_module().snapshot().autoherd,
     autowar = aw_module().snapshot().autowar,
-  })
-  store.save()
+  }) == false then
+    error("store.set failed: persistence snapshot was not accepted")
+  end
+  if store.save() == false then
+    error("store.save failed: persistence snapshot was not saved to disk")
+  end
 end
 
 function M.load()

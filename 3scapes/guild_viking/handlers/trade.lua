@@ -5,6 +5,7 @@
 -- calls (viking_window.*, ColourNote) are dropped -- the protocol layer already
 -- marks ui.dirty(); parsers never do.
 local S = require("state").S
+local observe = require("herd_observe")
 local util = require("util")
 
 local M = {}
@@ -60,6 +61,7 @@ local TGOODS_MIN_LIN = 0
 local TGOODS_MAX_LIN = 13
 local TGOODS_MAX_COUNT = 14
 local tgoods_stream = {
+  connection_epoch = S.herd_connection_epoch or 0,
   expected = nil,
   pending = nil,
   seen = nil,
@@ -67,6 +69,26 @@ local tgoods_stream = {
   last_lin = nil,
   complete = false,
 }
+
+-- Detached scalars only: querying progress must neither publish pending prices
+-- nor create receipt evidence. A reset invalidates the view immediately, even
+-- before the next frame arrives to discard the old decoding context.
+local function tgoods_status()
+  local epoch = S.herd_connection_epoch or 0
+  if tgoods_stream.connection_epoch ~= epoch then
+    return { received = 0, complete = false, ever_complete = false,
+             connection_epoch = epoch }
+  end
+  return {
+    received = tgoods_stream.complete and tgoods_stream.expected or tgoods_stream.count,
+    expected = tgoods_stream.expected,
+    complete = tgoods_stream.complete,
+    ever_complete = tgoods_stream.last_complete_at ~= nil,
+    last_complete_at = tgoods_stream.last_complete_at,
+    last_lin = tgoods_stream.last_lin,
+    connection_epoch = epoch,
+  }
+end
 
 local function decode_tgoods_records(records)
   if type(records) ~= "table" then error("TGOODS goods must be a table") end
@@ -76,6 +98,7 @@ local function decode_tgoods_records(records)
       local abbr = tostring(r.good)
       local good = GOOD_SHORT[abbr] or abbr
       goods[good] = {
+        _received_at = os.time(),
         score  = tonumber(r.score) or 0,
         supply = tonumber(r.sup) or 0,
         demand = tonumber(r.dem) or 0,
@@ -122,6 +145,10 @@ local function start_tgoods_stream()
 end
 
 local function write_streamed_tgoods(parts, full)
+  local epoch = S.herd_connection_epoch or 0
+  if tgoods_stream.connection_epoch ~= epoch then
+    tgoods_stream = { connection_epoch = epoch, count = 0, complete = false }
+  end
   local lin = parts.lin
   local supplied_expected = parts.lin_count
   if not is_tgoods_integer(lin) or lin < TGOODS_MIN_LIN or lin > TGOODS_MAX_LIN then
@@ -155,11 +182,13 @@ local function write_streamed_tgoods(parts, full)
 
   if tgoods_stream.count == tgoods_stream.expected then
     S.trade_goods = tgoods_stream.pending
+    observe.record("prices")
     record_tgoods_grid_history(S.trade_goods)
     tgoods_stream.pending = nil
     tgoods_stream.seen = nil
     tgoods_stream.count = 0
     tgoods_stream.complete = true
+    tgoods_stream.last_complete_at = os.time()
   end
 end
 
@@ -185,6 +214,7 @@ local function write_tgoods(parts, full)
     if lin and type(records) == "table" then
       local goods = decode_tgoods_records(records)
       S.trade_goods[lin] = goods
+      observe.record("prices")
       record_tgoods_history(lin, goods)
     end
   end
@@ -773,7 +803,10 @@ local function write_heat(values)
 end
 
 -- Guild.State: banked daler. Its MIP twin lives here, so its writer does too.
-local function write_daler(v) S.daler = tonumber(v) or 0 end
+local function write_daler(v)
+  S.daler = tonumber(v) or 0
+  observe.record("daler")
+end
 
 M._gmcp = {
   STAFF    = write_staff,
@@ -800,4 +833,8 @@ M._gmcp = {
   TGOODS   = write_tgoods,
 }
 
-return M
+-- init.register_handlers enumerates every non-reserved field as a MIP key;
+-- an underscore alone is NOT reserved. Keep this read-only API lookup-only.
+return setmetatable(M, { __index = function(_, key)
+  if key == "_tgoods_status" then return tgoods_status end
+end })

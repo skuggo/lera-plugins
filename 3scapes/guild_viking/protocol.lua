@@ -150,7 +150,11 @@ local function merge_page(run, data)
   for key, value in pairs(data) do
     if not ENVELOPE[key] then
       local prev = run.keys[key]
-      if prev == nil then
+      if key == "lmarket_partial" then
+        -- Payload metadata, not envelope: retain it until composite dispatch.
+        -- Repeated scalar markers are not sliced arrays or malformed repeats.
+        run.keys[key] = value
+      elseif prev == nil then
         -- Stored by reference, and an array key sliced across later pages is
         -- appended to in place below -- so a future consumer must not retain
         -- the decoded payload table expecting it to stay as delivered.
@@ -220,11 +224,11 @@ end
 -- (SETTLERX owns the housing totals outright -- see write_shplots in
 -- handlers/city.lua), but a later plan adds ~20 more keys, and this is the one
 -- class of bug that cannot be reconstructed from a bug report.
-local function apply_gmcp_frame(data, skip_envelope, full)
+local function apply_gmcp_frame(data, skip_envelope, full, package)
   local pending = {}  -- mip_key -> { [gmcp_key] = value }, composites only
   local units = {}    -- { mip = <MIP key or nil>, gmcp = <name>, value = ... }
   for key, value in pairs(data) do
-    if not skip_envelope or not ENVELOPE[key] then
+    if key ~= "lmarket_partial" and (not skip_envelope or not ENVELOPE[key]) then
       local composite_key = composite_of[key]
       if composite_key then
         local parts = pending[composite_key]
@@ -243,7 +247,15 @@ local function apply_gmcp_frame(data, skip_envelope, full)
   table.sort(units, unit_lt)
   for _, u in ipairs(units) do
     if u.composite then
-      dispatch_gmcp(u.mip, u.value, full)
+      -- Marked Livestock chunks contain only a bounded subset of lineages.
+      -- Each delivered list is complete after reassembly; omitted pools keep
+      -- their original receipts. Only numeric 1 opts out of legacy eviction.
+      local composite_full = full
+      if package == "Guild.Livestock" and data.lmarket_partial == 1
+          and u.mip == "LMARKET" then
+        composite_full = false
+      end
+      dispatch_gmcp(u.mip, u.value, composite_full)
     else
       -- Single keys keep going through apply_gmcp_key, so the unmapped-key
       -- accounting lives in exactly one place.
@@ -258,7 +270,7 @@ end
 local function apply_gmcp_package(package, data, skip_envelope, full)
   local whole = gmcp_map.package_key(package)
   if not whole then
-    apply_gmcp_frame(data, skip_envelope, full)
+    apply_gmcp_frame(data, skip_envelope, full, package)
     return
   end
   -- The envelope is the protocol layer's, not the writer's, so it is stripped

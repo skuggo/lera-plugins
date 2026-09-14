@@ -33,6 +33,235 @@ Copy plugins to your profile's plugin directory or load them directly:
 plugin.load("/path/to/lera-plugins/generic/deadmans")
 ```
 
+## Viking livestock GMCP chunks
+
+Viking already uses all 16 server package slots, so core and market pushes share
+`Guild.Livestock`. No new package or extra subscription is needed; the existing
+root `Guild` registration handles both. The core payload has seven keys:
+`herds`, `bqueue_used`, `bqueue_max`, `bqueue`, `lfeed`, `lpending`, and `lneeds`.
+Separate bounded market payloads carry at most two lineage lists from
+`lmarket_1` through `lmarket_13`, plus `lfind_posts`, `lfind_offers`, and
+`lfind_auctions`, with the numeric marker `lmarket_partial = 1`.
+
+The marker survives protocol page reassembly and is recognized as metadata, not
+an unknown state key. Only numeric `1` on `Guild.Livestock` overrides `full`, and
+only for the `LMARKET` composite; `false`, `true`, and string `"1"` do not opt in.
+Each delivered lineage list replaces that lineage atomically after reassembly.
+Omitted lineages retain their rows and original receipt timestamps; explicit
+`[]` clears exactly its lineage. Market-only pushes neither synthesize pending
+proof nor refresh core receipt evidence. Consecutive core-only full pushes leave
+the market untouched. Unmarked legacy bulk full pushes still evict omitted
+lineages when market keys are present. The server's existing eight-page transport
+limit and secure implementation are unchanged.
+
+## Viking Auto-Herd quality purchases
+
+Quality buys must meet the configured raw stat-score margin and improve the
+forecast weighted herd score. Compact `management` metadata enables hundredth-point
+averages: fractional gains count even when the whole-point display would not move.
+Legacy records retain whole-point averaging and whole-lot purchase semantics.
+Trait preferences only rank eligible lots and are ignored when the herd has a trait.
+
+Complete `breeds` history accepts a comma-separated string or native array; an
+explicit empty string is known empty history, while missing or malformed history
+is unknown. With valid management, any purchased breed can
+provide proportional generation relief, including a known breed, but refresh buys
+must not degrade any stat. Only a genuinely new breed can earn hybrid bonuses.
+Legacy refresh remains conservative: confirmed fresh history and no weighted loss.
+
+Protected offers require exact `unit_price`, remaining `available`, a 32-hex `token`,
+and valid herd management. Count is the minimum of lot/remaining stock, penfree,
+and floor((daler - reserve) / unit_price); cost is count times unit price. Commands
+are `vlivestock buy <lineage> <idx+1> <count> <token>`. Incomplete new metadata never
+falls back to an unprotected command. Herd management confirms the upgraded schema
+even if the frame budget omits all optional offer fields; that listing waits for
+protected offer metadata rather than using a legacy buy. Upgraded GMCP includes
+management for all owned pens, including head-zero pens, so Auto-Herd can stock an
+empty pen with an exact count and token. Legacy records retain whole-lot semantics.
+
+Rotating compact quotes are parsed and cleared when an offer row is replaced without
+a quote. They are advisory only: the current wire lacks herd head/cap/pending identity,
+and the token fingerprints the offer, not the herd. Auto-Herd therefore calculates
+deterministic fixedpoint forecasts locally for the exact reserve-limited count;
+parsed quotes are advisory and are not used to authorize purchases. Auto-Herd never
+banks on random hybrid bonuses.
+A future server quote would need a compact herd-state fingerprint (covering head,
+cap, pending, stats and generation) before it could safely replace this forecast.
+These are forecasts, not guaranteed arrival improvements or future-profit promises.
+
+Pending deliveries pause further purchases to that pen. Full pens remain blocked
+in normal Auto-Herd; existing toggles and reserve settings are unchanged.
+Replacement below is a separate, default-off authorization for irreversible slaughter. Predictions use the currently reported herd, not a guarantee of
+its state when animals arrive. Herd age now shows `Age:0` for a known zero and
+`Age:?` when the server did not report an age.
+
+### Opt-in herd replacement and forecast
+
+Replacement is **off by default** and requires the upgraded server management metadata
+and guarded count/token purchase commands. The corresponding server changes are prepared
+separately but are not deployed by this plugin update. Legacy feeds never authorize
+replacement slaughter. If an offer disappears after culling, the planner halts and the
+herd can remain smaller; it does not repeatedly cull or buy an unprotected substitute.
+Server auto-slaughter must already be off; the plugin does not change that setting.
+
+**`/vik herd replace on` authorizes irreversible slaughter**, but sends nothing
+itself. Execution starts only on a later tick with master `/vik herd on` also on,
+normal buying neither confirming nor cooling down, and fresh validated state.
+Loading, configuring settings, status and previews never send commands or request refreshes.
+No viable replacement leaves ordinary safe purchases available; an active or halted
+replacement blocks all ordinary Auto-Herd until completion or explicit acknowledgement.
+
+Commands (all prefixed `/vik herd`):
+
+- `refresh`: request a read-only GMCP resync using only
+  `gmcp.send('Core.Supports.Add', {'Guild 1'})` (never `Set`, which would replace
+  other subscriptions). The explicit command requires only a live connection and
+  negotiated GMCP; no prior livestock receipt is needed, so it can bootstrap missing
+  herd data after a plugin reload. Requests, including failed sends,
+  are debounced for 60 seconds using `os.time()`. This is **a request, not confirmation**:
+  the server clears namespace delta caches but does not accelerate its schedule.
+  Allow ~15 seconds for livestock/city and up to ~5 minutes for the trade grid.
+  No game commands, saves, toggle changes, job resets or receipt timestamp changes.
+  With replacement already authorized **and** master Auto-Herd on, an idle tick
+  blocked by stale receipts may request the same resync at most once per 120 seconds,
+  only with Viking livestock already received on this connection and no ordinary
+  action, pending deliveries, butchery queue or local job.
+  Busy, halted and reconnect-settling ticks never automatically refresh. Actual
+  incoming receipts—not requests—restore freshness, including unchanged fields
+  that would otherwise remain older than their replacement freshness limit forever.
+- `forecast` or `replace preview`: read-only gross opportunity, purchase cost,
+  conservative lower scenario and **advisory high**, with assumptions/exclusions or
+  the blocking reason. No sends, refresh requests, configuration initialization,
+  recovery or saves. Works with either toggle off and can show negative opportunities
+  below the execution profit threshold. Connection, freshness, budget, metadata and
+  unresolved-job gates still apply. Known legacy management metadata is reported
+  before generic stale receipts; unavailable production is not replaced with zero.
+  Rejected previews show at most five additional lines, one per owned pen, sorted by
+  building. Reasons come from actual candidate gates: full head/cap, server
+  auto-slaughter, disabled pen, protected/minimum keep/cull fraction, pending,
+  same-species offer availability/freshness/validity/protected metadata, cost versus
+  reserve/budgets, raw quality margin/no gain, production/prices, or unknown forecast.
+  When several matching offers fail, the furthest validation gate is shown (lexical
+  tie-break); this is a representative rejection, not an exhaustive list. Other
+  species are ignored. A global gate instead retains its existing summary. Details
+  print only for explicit CLI previews, never unsolicited on ticks.
+- `replace on|off|status|reset`: off retains any unresolved halt. Reset rejects active
+  jobs: turn replacement off, **manually inspect herd, butchery queue and deliveries**,
+  then reset to acknowledge uncertain server state. Reset leaves replacement off and
+  retains daily exposure; it does not undo slaughter or purchases.
+- `replace maxcost N`, `dailycost N`, `dailycull N`, `maxcull N`, `keep N`,
+  `minprofit N`, `horizon N`, `gap N`, `overhead N` (repeat `replace` for each command).
+  Cost limits/counts/ticks are nonnegative integers; horizon is positive and gap
+  cannot exceed horizon. Profit may be signed/fractional; overhead is nonnegative.
+  CLI values must be finite with magnitude at most 1e9. Module defaults: maxcost 500,
+  dailycost 2000, dailycull 10, maxcull 2, keep 4, minprofit 0, horizon 8, gap 1.
+  The module additionally caps each cull at 10% of the pen and respects protected stock.
+- `model <building> output N`: explicitly configure current **whole-herd** output
+  units per forecast tick (not output per animal), overriding automatic observations.
+  Nonnegative finite number; pigs/horses have known zero direct output by default
+  and do not permit a nonzero direct-output model. Horse transport is not valued.
+- `model <building> share N`: fraction of output responding to yield, **0..1, not
+  percent**. Optional advisory ratio assumption; omission never invents a share or
+  midpoint. Even an explicit share cannot turn a positive ratio gain into a lower-bound
+  execution benefit: integer rounding and additive staff can erase that gain.
+
+Replacement uses `price_max_age = 600` seconds by default for **only** the last full
+TradeGoods grid receipt (`observed.prices`) and each selected meat/output price row's
+actual `at` timestamp, including guarded-buy revalidation. The server refreshes
+TradeGoods every 300 seconds; the 600-second window allows two refresh cycles,
+including bounded scheduling jitter, but rejects age 601. The module option must be
+a finite positive integer (no upper cap, matching `max_age`); no CLI option is added.
+Missing, invalid or future receipts still block, and a fresh/partial grid cannot
+promote stale selected rows. Cached reconnect data without current receipt evidence
+is not accepted. Full-grid errors retain the `stale/missing prices` prefix and
+identify missing/invalid receipts or the actual stale age and limit. Buying still
+requires exactly unchanged selected quote values, not merely a recent timestamp.
+Herds, pending deliveries, butchery queue, wallet, production and livestock offers
+retain `max_age = 180`; destructive confirmation timeouts and cooldown are unchanged.
+
+Explicit `forecast` / `replace preview` failures for `stale/missing prices` add one
+read-only price-stream line: received/expected lineages before the first complete
+grid, or the last complete receipt's age and current progress while receiving.
+Legacy observed receipts still count as completion evidence after a handler reload.
+Unknown `0/?` progress notes the server's next 300-second cycle. This diagnostic
+never saves, sends commands/GMCP, or requests a refresh. Automatic retry/resync is
+unchanged: its 120-second retry can still interrupt a long partial stream; progress
+alone cannot safely suspend retries indefinitely without a bounded stream-age signal.
+
+Without a manual output override, fresh validated `S.production` wool/eggs/milk
+supplies the corresponding unique producer's **uncapped current whole-herd output**.
+Its `herd_observed.production` receipt `{at,seq}` must be no older than `max_age`
+(default 180 seconds), not in the future, and must come from the current connection:
+connection reset clears receipt evidence. Cached production alone is not evidence.
+The city handler must stamp only validated full production frames. Models are derived
+on demand, never saved; manual output remains an explicit user assumption.
+
+Gross preview uses the known zero direct purchase delivery/slaughter fees and zero
+persistent same-head feed delta. **Sale transport and risk are excluded**, not assumed
+free for execution. Execution still requires an explicit `replace overhead N` assumption,
+even if `enabled=true` was previously saved. Set `replace overhead 0` only to knowingly
+acknowledge zero additional sale transport/risk cost; preview never supplies this authorization.
+
+The lower scenario credits **zero positive production gain** and charges up to the
+**entire baseline output per gap tick**, not a culled fraction. A yield decline charges
+whole baseline output after arrival too. High/explicit-share estimate and break-even
+are advisory ratio scenarios, not guaranteed bounds or guaranteed profit. Horizon,
+gap and manual models remain assumptions. No automatic meat/output sales or grain
+buys are emitted. Random births, deaths, hybrids and disease are excluded; gap feed
+savings are ignored and current quoted demand does not refresh across the horizon.
+
+Integration API: `autoherd.replacement_context()` exposes raw state records, current
+`os.time()`, connection/master flags, connection epoch, per-panel `{at,seq}` observations,
+wallet/reserve/keep/weights/building settings and prices. Sell/demand comes from
+`market.best_sell_of(good)` with the **currently selected** `S.trade_goods[lin][good]`
+row's `_received_at`; missing timestamps remain unknown. Optional grain buy/supply uses
+`best_buy_of`. Context also exposes production and its receipt evidence.
+`replacement_preview()` calls the separate pure `herd_replace.preview` path with
+copied options. Both preview APIs preserve the first two returns `(plan, reason)`
+while adding a third array of `{building, reason}` rejections (empty for global
+failures or no rejected owned pens). Pens with an eligible candidate are omitted.
+`propose`/`step` retain execution authorization, candidate eligibility and profit gates.
+No synthetic timestamps, production shares or execution overhead are supplied.
+
+**Feed guard for new replacement jobs:** before the initial cull can reserve daily
+budget or create a marker, integration applies the same `feed_guard` / `feed_ticks`
+assessment as ordinary Auto-Herd: observed city-wide `lfeed.grain` is per-tick need,
+warehouse grain is stock, and the buffer is `need * max(1, feed_ticks)`. When observed
+need is unavailable, the existing owned/enabled herd-head fallback is used. With
+107 grain / 33 per tick / a four-tick 132 buffer, no replacement job starts; exactly
+132 permits it if all other gates pass. Explicit feed-off and custom buffer settings
+are respected, never rewritten or lowered.
+
+Only **new** replacement jobs are feed-gated. Busy cull/buy/delivery confirmations
+and cooldown continue under their existing safety checks even when feed falls low,
+so feed shortage alone does not abandon a smaller, already-culled herd. After
+completion, another cull must pass the feed gate again. Ordinary purchase planning
+retains its existing advisory feed behavior (it may still select a buy), unchanged
+warning deduplication and planning interval; there is no separate tick-warning stream.
+
+Preview remains pure and retains useful candidate forecasts/rejections even when
+feed would block execution. `autoherd.replacement_preview()` adds a fourth return,
+a feed-warning string or nil, without changing the first three. Explicit `forecast`
+and `replace preview` print it separately as a **new replacement execution blocker**,
+not as candidate ineligibility or an instruction to halt an existing job. The lower-level
+`herd_replace.preview()` API is unchanged.
+
+Replacement reserves daily purchase/cull exposure and persists its marker before
+**every send**. Cull needs fresh matching herd **and** queue receipts before a guarded
+count/token buy; pending and delivery receipts drive completion. Disconnect, master-off,
+stale/drifting state, restart or send/persistence failure retains a halt, not a replay.
+Persistence errors block ordinary automation too, even after later saves succeed,
+until explicit reset. An idle configuration-save failure also creates a halt marker;
+a best-effort save retains the halt across reloads if storage recovers. Recovery runs
+once per settings-table reference. `persist.save()` throws an operation-specific error
+when either `store.set()` or `store.save()` returns explicit `false`, and lets storage
+exceptions propagate. A failed `store.set()` skips `store.save()` so stale data is not
+written as if the new snapshot succeeded. Successful `persist.save()` still returns
+nil; storage APIs returning nil without throwing remain accepted for legacy compatibility.
+The replacement send guard catches these errors (and also rejects explicit false/error
+returns from persistence), halts, and sends nothing. Tests exercise both native-style
+boolean failures through the real persistence wrapper, not just mocked `persist.save()`.
+
 ## Commands
 
 Every plugin command here is registered through the command registry, so it

@@ -6,6 +6,7 @@
 -- ColourNote) are dropped -- the protocol layer already marks ui.dirty();
 -- parsers never do.
 local S = require("state").S
+local observe = require("herd_observe")
 local util = require("util")
 local gmcp_map = require("gmcp_map")
 
@@ -446,15 +447,40 @@ local function write_cdtime(v)
   end
 end
 
--- production. An array of {good, amount} over the wire, a good -> amount
--- lookup in state. Amounts are signed: a negative is net consumption.
+-- Raw uncapped output per tick, not net of consumption. Keep the legacy
+-- display coercions, but only a complete valid snapshot is planner evidence.
 local function write_production(records)
-  if type(records) ~= "table" then return end
+  if type(records) ~= "table" then
+    if S.herd_observed then S.herd_observed.production = nil end
+    return
+  end
+  local valid, count, seen = true, 0, {}
+  for i, r in pairs(records) do
+    count = count + 1
+    if type(i) ~= "number" or i < 1 or i % 1 ~= 0 then valid = false end
+    if type(r) ~= "table" or type(r.good) ~= "string"
+        or not r.good:match("^[a-z][a-z_]*$") or seen[r.good]
+        or type(r.amount) ~= "number" or r.amount ~= r.amount
+        or r.amount < 0 or r.amount == math.huge then
+      valid = false
+    else
+      seen[r.good] = true
+    end
+  end
+  -- Counting keys alone would allow holes or an object masquerading as an array.
+  for i = 1, count do
+    if rawget(records, i) == nil then valid = false end
+  end
   S.production = {}
   for _, r in ipairs(records) do
     if type(r) == "table" and r.good ~= nil then
       S.production[tostring(r.good)] = tonumber(r.amount) or 0
     end
+  end
+  if valid then
+    observe.record("production")
+  elseif S.herd_observed then
+    S.herd_observed.production = nil
   end
 end
 
