@@ -147,6 +147,7 @@
 -- `/vik herd [<sub>]` is wired in init.lua by M.herd_command below --
 -- without it the whole config/menu surface is unreachable.
 local S = require("state").S
+local util = require("util")
 local page_opts = require("page_opts")
 -- market.lua holds the three livestock figures this module shares with
 -- pages/livestock.lua (wh_amount_of/wh_known, feed_draw, HERD_CAP), so the
@@ -1221,10 +1222,19 @@ function M.tick()
       ah_sm.next_at = now + AH_INTERVAL
       return
     end
+    -- Checked before any bookkeeping: the state machine below records this as
+    -- the outstanding command and waits on a confirmation for it, so marking a
+    -- send that never happened would stall the automation until the timeout.
+    if type(action.cmd) ~= "string" or action.cmd:match("^%s*$") then
+      ah.status = "skipped an action with no command: " .. tostring(action.why)
+      note("FFA500", "[Auto-Herd] " .. ah.status)
+      ah_sm.next_at = now + AH_INTERVAL
+      return
+    end
     ah.status = nil                 -- LEGACY:422, overwritten two lines down
     ah_sm.sig = ah_state_sig()
     ah_sm.cmd, ah_sm.lin, ah_sm.idx = action.cmd, action.lin, action.idx
-    mud.send(action.cmd)
+    util.send(action.cmd, "autoherd")
     log_action(ah, action.why)
     ah.status = "last: " .. action.why
     note("FFA500", "[Auto-Herd] " .. action.why)

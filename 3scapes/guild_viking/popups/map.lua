@@ -686,7 +686,7 @@ local function travel_to(poi)
   end
   status("[vmap] Traveling to %s (%d steps)", name, #path)
   for _, dir in ipairs(path) do
-    mud.send(dir)
+    require("util").send(dir, "vmap travel")
   end
 end
 

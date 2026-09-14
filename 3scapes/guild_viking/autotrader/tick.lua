@@ -137,6 +137,7 @@
 -- `sm`), so a test suite that drives several independent scenarios through
 -- M.tick() needs a way to rewind it between them.
 local S = require("state").S
+local util = require("util")
 local page_opts = require("page_opts")
 local core = require("autotrader.core")
 local planner = require("autotrader.plan")
@@ -278,11 +279,17 @@ function M.tick()
   end
   if sm.phase == "sending" and now >= sm.next_at then
     local cmd = sm.current and sm.current[sm.index]
-    if not cmd then fail_closed("invalid empty transaction", now); return end
+    -- An empty string is truthy in Lua, so a `not cmd` test let a half-built
+    -- command through to the MUD as a bare prompt line. A transaction that
+    -- cannot name its own command is a planner bug, so fail closed rather than
+    -- skipping the step and letting the rest of the transaction run.
+    if type(cmd) ~= "string" or cmd:match("^%s*$") then
+      fail_closed("invalid empty transaction", now); return
+    end
     -- Baseline immediately before the terminal dispatch/queue command --
     -- earlier cart completions while building a route cannot confirm it.
     if sm.index == #sm.current then sm.baseline = mip_sig() end
-    mud.send(cmd)
+    util.send(cmd, "autotrader")
     sm.index = sm.index + 1
     if sm.index > #sm.current then
       sm.phase, sm.deadline = "confirming", now + CONFIRM_TIMEOUT

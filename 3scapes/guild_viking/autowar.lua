@@ -1,4 +1,5 @@
 local state = require("state").S
+local util = require("util")
 local page_opts = require("page_opts")
 
 -- Lera has no MUSHclient ColourNote/OnPluginSaveState globals. Keep output
@@ -914,7 +915,9 @@ local function aw_dispatch(aw, action)
       if o.bid and o.coord then mud.send("vbattle order " .. o.bid .. " " .. o.coord) end
     end
   end
-  if action.cmd then mud.send(action.cmd) end
+  -- `if action.cmd` alone is not enough: "" is truthy in Lua, and an empty
+  -- cmd reached the MUD as a bare prompt line.
+  if action.cmd then util.send(action.cmd, "autowar") end
   log_action(aw, action.desc)
   aw.status = "last: " .. action.desc
   aw_say(aw, "orange", action.desc)

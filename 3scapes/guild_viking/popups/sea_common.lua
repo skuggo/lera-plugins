@@ -346,7 +346,9 @@ function M.open_actions_menu()
   require("menu").open({
     items = items,
     title = "Voyage Actions",
-    on_select = function(value) mud.send(value) end,
+    -- Guarded: a menu item whose value never got built would otherwise
+    -- reach the MUD as a bare prompt line.
+    on_select = function(value) require("util").send(value, "sea popup") end,
   })
   return true
 end
