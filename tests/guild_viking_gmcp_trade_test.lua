@@ -221,6 +221,29 @@ check("grades group on their own building",
       and S.refineries[2].grades[1].name == "coarse",
       #S.refineries[1].grades .. "/" .. #S.refineries[2].grades)
 
+-- The delta that broke this in the field: refinery stock ticks constantly
+-- while the grade rows rarely change, so the protocol layer re-sends
+-- `refinery` ALONE. Rebuilding from a nil `refinery_grades` wiped every grade
+-- row, and the Refineries section collapsed to bare "name [stock / cap]"
+-- lines within a tick of the last full push. MIP hid this by re-sending the
+-- whole key every time; the bug only surfaced once MIP stopped covering it.
+trade({ refinery = { { bldg = "smelter", tier = 2, stock = 75, cap = 100 },
+                     { bldg = "bakehouse", tier = 1, stock = 12, cap = 40 } } })
+check("a refinery-only delta updates the stock",
+      S.refineries[1].stock == 75 and S.refineries[2].stock == 12,
+      S.refineries[1].stock .. "/" .. S.refineries[2].stock)
+check("a refinery-only delta KEEPS the grades it did not carry",
+      #S.refineries[1].grades == 2 and S.refineries[1].grades[1].name == "fine"
+      and #S.refineries[2].grades == 1,
+      #S.refineries[1].grades .. "/" .. #S.refineries[2].grades)
+
+-- An explicitly empty grade list still means "no grades now", not "unchanged".
+trade({ refinery = { { bldg = "smelter", tier = 2, stock = 75, cap = 100 } },
+        refinery_grades = {} })
+check("an empty refinery_grades clears them",
+      #S.refineries == 1 and #S.refineries[1].grades == 0,
+      #S.refineries[1].grades)
+
 -- ---- market ----------------------------------------------------------------
 -- The seam is what market.lua hangs its price recording off, so it has to fire
 -- on this path too.

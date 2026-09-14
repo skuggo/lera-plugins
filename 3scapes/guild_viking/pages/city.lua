@@ -235,6 +235,9 @@ local REFINERY_NAMES = {
   furriers_lodge = "Furrier's Lodge", smelter = "Smelter", smithy = "Smithy",
   mead_cellar = "Mead Cellar", weaponry = "Weaponry", armoury = "Armoury",
   goldsmith = "Goldsmith's Hall",
+  -- The three the server added later. Without these the rows fell back to the
+  -- raw id and rendered lowercase next to their properly-named siblings.
+  weaver = "Weaver", smokehouse = "Smokehouse", creamery = "Creamery",
 }
 
 local function wstock_row(width, ws, show_name)

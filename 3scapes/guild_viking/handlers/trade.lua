@@ -653,18 +653,42 @@ end
 
 -- refinery + refinery_grades, foreign-keyed by `bldg`. The building id is
 -- `bldg` on both halves and `id` in state.
+-- refinery and refinery_grades are two halves of one composite, and the
+-- protocol layer only re-sends a key that CHANGED. Refinery stock moves every
+-- tick; the grade rows change far less often -- so the overwhelmingly common
+-- delta carries `refinery` alone. Rebuilding the grade list from a nil
+-- `refinery_grades` wiped every grade row on that frame, which is why the
+-- Refineries section collapsed to bare "name [stock / cap]" lines within a
+-- tick of the last full push.
+--
+-- MIP hid this: it had no delta cache and re-sent the whole REFINERY string,
+-- grades included, on every push. The bug arrived with the GMCP migration and
+-- only became visible once MIP stopped covering for it.
+--
+-- So a missing half means "unchanged", not "gone": carry the grades already in
+-- state across. Same shape as write_wstock's `wstock_cap` presence test.
 local function write_refinery(parts)
   if type(parts) ~= "table" then return end
   if type(parts.refinery) ~= "table" then return end
+  local carried_grades = type(parts.refinery_grades) == "table"
   local grades_by_bldg = group_by(parts.refinery_grades, "bldg")
+  local previous = {}
+  if not carried_grades then
+    for _, r in ipairs(S.refineries or {}) do previous[r.id] = r.grades end
+  end
   S.refineries = {}
   for _, r in ipairs(parts.refinery) do
     if type(r) == "table" then
-      local grades = {}
-      for _, g in ipairs(grades_by_bldg[r.bldg] or {}) do
-        grades[#grades + 1] = { name = tostring(g.grade or ""),
-                                qty = tonumber(g.qty) or 0,
-                                pct = tonumber(g.pct) or 100 }
+      local grades
+      if carried_grades then
+        grades = {}
+        for _, g in ipairs(grades_by_bldg[r.bldg] or {}) do
+          grades[#grades + 1] = { name = tostring(g.grade or ""),
+                                  qty = tonumber(g.qty) or 0,
+                                  pct = tonumber(g.pct) or 100 }
+        end
+      else
+        grades = previous[tostring(r.bldg or "")] or {}
       end
       S.refineries[#S.refineries + 1] = {
         id    = tostring(r.bldg or ""),
