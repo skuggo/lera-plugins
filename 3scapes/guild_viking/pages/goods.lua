@@ -187,6 +187,13 @@ end
 
 -- Market Movers (guild_viking.lua:3376-3437 build_mover_rows's movers part;
 -- rendering shape from draw_mover_row, :3507-3540).
+-- Profit and margin get fixed, right-aligned cells for the same reason the
+-- town and good names get %- padded ones: they are the only remaining
+-- variable-width fields, so a four-digit profit next to a five-digit one used
+-- to push the margin column sideways row by row.
+local MOVER_PROFIT_W = 8   -- "+13464d"
+local MOVER_MARGIN_W = 7   -- "(100/u)"
+
 local function mover_row(width, rank, a)
   local left = string.format("%s%2d.%s %s%-12s%s",
     C.cyan, rank, pagelib.RESET, cc.good_color(a.good), cc.good_label(a.good), pagelib.RESET)
@@ -194,8 +201,10 @@ local function mover_row(width, rank, a)
     C.white, town_short(a.buy_lin), pagelib.RESET, C.yellow, a.buy, pagelib.RESET)
   local sell = string.format("%s%-10s%s %s%4d%s",
     C.white, town_short(a.sell_lin), pagelib.RESET, C.bright_green, a.sell, pagelib.RESET)
-  local tail = string.format("%s+%dd%s  %s(%d/u)%s",
-    C.bright_green, a.profit or 0, pagelib.RESET, C.dim, a.margin or 0, pagelib.RESET)
+  local tail = pagelib.rjust(C.bright_green .. string.format("+%dd", a.profit or 0)
+      .. pagelib.RESET, MOVER_PROFIT_W)
+    .. "  " .. pagelib.rjust(C.dim .. string.format("(%d/u)", a.margin or 0)
+      .. pagelib.RESET, MOVER_MARGIN_W)
   local hot_tag = market.mover_is_hot(a.sell, a.sell_lin, a.good)
     and ("  " .. C.bright_green .. "HOT" .. pagelib.RESET) or ""
   return pagelib.trunc(left .. " " .. buy .. C.dim .. " -> " .. pagelib.RESET .. sell .. "  " .. tail
@@ -204,27 +213,36 @@ end
 
 -- Refined Goods (guild_viking.lua:3376-3437's refined part; rendering shape
 -- from draw_refsell_row, :3544-3572).
+-- Every numeric field gets its own fixed cell. Padding the stock block as a
+-- whole was not enough: the unit price ahead of it was still variable-width,
+-- so a three-digit price ("264/u") pushed everything after it one cell right
+-- of a two-digit one, and inside the block "have 1365" and "have 847" put
+-- their (~value) parentheses in different columns.
+local REF_PRICE_W = 6    -- "264/u", right-aligned on the digits
+local REF_HAVE_W  = 10   -- "have 1365"
+local REF_VALUE_W = 12   -- "(~96915d)", right-aligned
+local REF_DEMAND_W = 13  -- "Demand: 118" plus the gap before "N blocked"
+
 local function refsell_row(width, rank, r)
-  local left = string.format("%s%2d.%s %s%-12s%s%s -> %s%s%-10s%s %s%d/u%s",
+  local left = string.format("%s%2d.%s %s%-12s%s%s -> %s%s%-10s%s",
     C.cyan, rank, pagelib.RESET, cc.good_color(r.good), cc.good_label(r.good), pagelib.RESET,
-    C.dim, pagelib.RESET, C.bright_green, town_short(r.sell_lin), pagelib.RESET,
-    C.bright_green, r.sell, pagelib.RESET)
+    C.dim, pagelib.RESET, C.bright_green, town_short(r.sell_lin), pagelib.RESET)
+  local price = pagelib.rjust(C.bright_green .. string.format("%d/u", r.sell or 0)
+    .. pagelib.RESET, REF_PRICE_W)
   local stock
   if (r.stock or 0) > 0 then
-    stock = string.format("%shave %d%s  %s(~%dd)%s",
-      C.yellow, r.stock, pagelib.RESET, C.bright_green, r.value or 0, pagelib.RESET)
+    stock = pagelib.trunc(C.yellow .. "have " .. tostring(r.stock) .. pagelib.RESET, REF_HAVE_W)
+      .. pagelib.rjust(C.bright_green .. string.format("(~%dd)", r.value or 0)
+        .. pagelib.RESET, REF_VALUE_W)
   else
-    stock = C.dim .. "no stock" .. pagelib.RESET
+    -- Spans both cells so Demand lands in the same column either way.
+    stock = pagelib.trunc(C.dim .. "no stock" .. pagelib.RESET, REF_HAVE_W + REF_VALUE_W)
   end
-  local demand = string.format("%sDemand: %d%s", C.dim, r.demand or 0, pagelib.RESET)
+  local demand = pagelib.trunc(string.format("%sDemand: %d%s", C.dim, r.demand or 0, pagelib.RESET),
+    REF_DEMAND_W)
   local blocked = (r.blocked or 0) > 0
-    and string.format("  %s%d blocked%s", C.cyan, r.blocked, pagelib.RESET) or ""
-  -- The good and town are already %-padded above, but stock is not, so the
-  -- Demand column used to slide left and right with "have 12 (~340d)" vs
-  -- "no stock". Pad it to a fixed cell so Demand stacks down the page.
-  local REF_STOCK_W = 22
-  return pagelib.trunc(left .. "  " .. pagelib.trunc(stock, REF_STOCK_W)
-    .. demand .. blocked, width)
+    and string.format("%s%d blocked%s", C.cyan, r.blocked, pagelib.RESET) or ""
+  return pagelib.trunc(left .. price .. "  " .. stock .. "  " .. demand .. blocked, width)
 end
 
 -- Auto-Trade status / log (guild_viking.lua:3376-3437's at_line part;

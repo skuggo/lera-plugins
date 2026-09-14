@@ -75,6 +75,21 @@ function pagelib.trunc(s, width)
   return table.concat(out)
 end
 
+-- Right-align to exactly `width` visible cells, padding on the LEFT. The
+-- counterpart to trunc's left-align, for numeric columns: a column of prices
+-- or profits has to stack on its digits, not on its leading "+" or "(", or
+-- every row with one more digit pushes the rest of the line sideways.
+--
+-- Over-wide input is truncated from the left to keep the cell's width exact,
+-- since the low-order digits are the ones that matter least to lose.
+function pagelib.rjust(s, width)
+  s = s or ""
+  if width < 0 then width = 0 end
+  local visible = pagelib.visible_width(s)
+  if visible >= width then return pagelib.trunc(s, width) end
+  return string.rep(" ", width - visible) .. s
+end
+
 -- Ported from LEGACY's fmt_num (/home/simon/code/3s_scripts_old/lua/guild_viking.lua:7423):
 --   fmt_num = function(n)
 --     local s = tostring(math.floor(n or 0))

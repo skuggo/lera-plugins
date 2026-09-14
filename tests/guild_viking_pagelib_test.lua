@@ -115,5 +115,22 @@ check("columns data row: exact cell + no-bleed truncated cell + padded cell", ou
     "5" .. string.rep(" ", 3),
   }, " "))
 
+-- ---- rjust ------------------------------------------------------------------
+-- The counterpart to trunc's left-align. What matters for a numeric column is
+-- that two values of DIFFERENT digit counts end at the same cell, so the pairs
+-- below are asserted against each other, not just against a literal.
+check("rjust pads on the left", pagelib.rjust("42", 5) == "   42")
+check("rjust exact width is unchanged", pagelib.rjust("12345", 5) == "12345")
+check("rjust zero width", pagelib.rjust("42", 0) == "")
+check("rjust nil is all padding", pagelib.rjust(nil, 3) == "   ")
+check("rjust ignores ANSI when measuring",
+  pagelib.visible_width(pagelib.rjust(C.green .. "42" .. RESET, 5)) == 5)
+check("digit counts end in the same column",
+  #pagelib.rjust("+7d", 8) == #pagelib.rjust("+13464d", 8))
+-- Over-wide input keeps the cell exact rather than pushing the row sideways;
+-- trunc drops from the right, which is what the width contract requires.
+check("rjust truncates over-wide input to the cell",
+  pagelib.visible_width(pagelib.rjust("1234567", 4)) == 4)
+
 if failures > 0 then os.exit(1) end
 print("ALL PAGELIB TESTS PASSED")

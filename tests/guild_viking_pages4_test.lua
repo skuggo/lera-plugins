@@ -169,6 +169,47 @@ do
   page_opts.set("show_goods_movers", true)
 end
 
+-- ---- Column alignment ------------------------------------------------------
+-- The point of a fixed-cell row is that rows with DIFFERENT digit counts put
+-- their later columns in the SAME screen column, so assertions here compare
+-- two rows against each other rather than against a literal layout -- a
+-- literal would have to be rewritten on every width tweak and would not
+-- actually test alignment.
+--
+-- Two refined rows are seeded whose unit prices differ in digit count (a
+-- two-digit price against a three-digit one) and whose stock differs likewise,
+-- since those were the two fields that used to shove the Demand column
+-- sideways. One row has stock and one has none, which is the other case that
+-- used to move it.
+do
+  local strip = function(t) return (t:gsub("\27%[[%d;]*m", "")) end
+  S.wstock_by_good = { mead = { amount = 1365 }, gemstones = { amount = 0 } }
+  S.blocks = {}
+  S.trade_goods[0].mead      = { score = 2, supply = 0, demand = 118, buy = 0, sell = 71 }
+  S.trade_goods[0].gemstones = { score = 2, supply = 0, demand = 152, buy = 0, sell = 264 }
+
+  local lines = goods_page.lines(WIDTH)
+  local mead, gems
+  for _, l in ipairs(lines) do
+    local plain = strip(l)
+    if plain:find("Mead", 1, true) and plain:find("/u", 1, true) then mead = plain end
+    if plain:find("Gemstones", 1, true) and plain:find("/u", 1, true) then gems = plain end
+  end
+  check("goods: both refined rows rendered", mead ~= nil and gems ~= nil, joined(lines))
+  if mead and gems then
+    -- "71/u" against "264/u": the unit price is right-aligned, so the slash
+    -- lands in the same column despite the extra digit.
+    check("goods: refined unit price is right-aligned on the digits",
+          mead:find("/u", 1, true) == gems:find("/u", 1, true),
+          mead:find("/u", 1, true) .. " vs " .. gems:find("/u", 1, true))
+    -- The Demand column stacks across "have 1365 (~Nd)" and "no stock", which
+    -- is the misalignment that started this.
+    check("goods: Demand starts in the same column with and without stock",
+          mead:find("Demand:", 1, true) == gems:find("Demand:", 1, true),
+          mead .. "\n" .. gems)
+  end
+end
+
 -- ---- Refined Goods own gate (nested inside show_goods_movers) --------------
 page_opts.set("show_goods_refined", false)
 local no_refined = goods_page.lines(WIDTH)
