@@ -95,7 +95,7 @@ local PAGE_MENUS = {
     { key = "show_stock_pending", label = "Show Pending Deliveries" },
     { key = "show_stock_find",    label = "Show Livestock Find" },
     { key = "show_stock_market",  label = "Show Market" },
-    { key = "show_stock_needs",   label = "Show Needs" },
+    { key = "show_stock_needs",   label = "Show Pens" },
     -- LEGACY:12625-12626, the two Auto-Herd rows, verbatim. LEGACY carried
     -- them on its City page because every livestock section lived in the City
     -- miniwindow; this port gave those sections their own page, so the rows

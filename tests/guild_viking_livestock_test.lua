@@ -202,24 +202,31 @@ if failures > 0 then
   print(failures .. " FAILURE(S)")
   os.exit(1)
 end
--- ---- Needs table -----------------------------------------------------------
--- The server's _v_lneeds() skips any species already at cap, so this table is
--- a restocking list and never a herd inventory -- titling it "Current/Cap"
--- made a full pen look like a missing one. The shortfall is spelled out so it
--- does not have to be subtracted by eye.
+-- ---- Pens table ------------------------------------------------------------
+-- Every BUILT pen is listed, at cap or not. The server used to drop fully
+-- stocked species, which made a pen at cap indistinguishable from a pen that
+-- had been wiped out -- both simply had no row, and "where are my pigs" had no
+-- answer. The at-cap row is the case this exists for, so it is asserted first.
 do
   S.lneeds = {
     { species = "sheep", current = 71, cap = 80 },
     { species = "horses", current = 39, cap = 40 },
+    { species = "pigs", current = 40, cap = 40 },
   }
   page_opts.set("show_stock_needs", true)
   local text = plain(80)
-  check("needs: the table is titled as understocked, not as an inventory",
-        text:find("Understocked", 1, true) ~= nil
-        and text:find("Current/Cap", 1, true) == nil, text)
-  check("needs: the shortfall is shown rather than left to be subtracted",
+  check("pens: a species at cap is still listed", text:find("Pigs", 1, true) ~= nil, text)
+  check("pens: an at-cap row reads full rather than showing a shortfall",
+        text:find("40/40", 1, true) ~= nil and text:find("full", 1, true) ~= nil, text)
+  check("pens: the shortfall is shown rather than left to be subtracted",
         text:find("-9", 1, true) ~= nil and text:find("-1", 1, true) ~= nil, text)
+  check("pens: the section is not titled as an inventory of current/cap",
+        text:find("Current/Cap", 1, true) == nil, text)
+  -- An empty table now means no livestock BUILDING, not "nothing needed", and
+  -- must not read as the latter.
   S.lneeds = {}
+  check("pens: the empty state names the real reason",
+        plain(80):find("No livestock buildings", 1, true) ~= nil, plain(80))
 end
 
 print("all livestock page cases passed")
