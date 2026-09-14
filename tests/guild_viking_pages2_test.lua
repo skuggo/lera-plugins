@@ -139,6 +139,52 @@ check("Longships header present", find_line(city_lines, "Longships") ~= nil)
 check("a ship row shows the seeded ship name (Ravager)",
       city_all:find("Ravager", 1, true) ~= nil)
 
+-- ---- Longship row: colour AND column alignment ------------------------------
+-- The colours are new (LEGACY drew these fields plain), and every one of them
+-- wraps an already-padded field -- an escape inside a "%-12s" would have the
+-- padding count escape bytes and the columns would drift apart row by row.
+-- So this checks both halves: the hue is present, and two rows whose names
+-- differ in length still put Crew: in the same column.
+do
+  local strip = function(t) return (t:gsub("\27%[[%d;]*m", "")) end
+  gm("Guild.Fleet", { ships = {
+    { name = "Vasa", tier = 2, state = "raiding", target = "Imaird", secs = 8400,
+      crew = 8, held = 0, durability = 100, saga_title = "the Legendary",
+      saga_raids = 327 },
+    { name = "Enigheten", tier = 2, state = "raiding", target = "Imaird", secs = 8400,
+      crew = 8, held = 0, durability = 100 },
+  } })
+  local fleet = city_page.lines(WIDTH)
+  local short_row, long_row, saga_row
+  for _, l in ipairs(fleet) do
+    local plain = strip(l)
+    if plain:find("^Vasa ") then short_row = l end
+    if plain:find("^Enigheten ") then long_row = l end
+    if plain:find("the Legendary", 1, true) then saga_row = l end
+  end
+  check("ships: both rows rendered", short_row ~= nil and long_row ~= nil, joined(fleet))
+  if short_row and long_row then
+    check("ships: Crew: stacks despite differing name lengths",
+          strip(short_row):find("Crew:", 1, true) == strip(long_row):find("Crew:", 1, true),
+          strip(short_row) .. "\n" .. strip(long_row))
+    check("ships: the name carries a colour", short_row:find(pagelib.C.bright_white, 1, true) ~= nil,
+          short_row)
+    check("ships: the raid target carries the same yellow an Auto-Raid target does",
+          short_row:find(pagelib.C.yellow .. "Imaird", 1, true) ~= nil, short_row)
+  end
+  check("ships: the saga title is coloured and its raid count is not",
+        saga_row ~= nil and saga_row:find(pagelib.C.magenta .. "the Legendary", 1, true) ~= nil
+        and saga_row:find(pagelib.C.dim .. "(327 raids)", 1, true) ~= nil, saga_row)
+  -- A docked ship must not show a stale target.
+  gm("Guild.Fleet", { ships = { { name = "Vasa", tier = 2, state = "docked",
+    target = "Imaird", secs = 0, crew = 8, held = 0, durability = 100 } } })
+  local docked = joined(city_page.lines(WIDTH))
+  check("ships: a docked ship shows no target", strip(docked):find("-> Imaird", 1, true) == nil,
+        strip(docked))
+  gm("Guild.Fleet", { ships = { { name = "Ravager", tier = 2, state = "raiding",
+    target = "Vestergotland", secs = 90, crew = 8, held = 0, durability = 100 } } })
+end
+
 check("Raids header present", find_line(city_lines, "Raids") ~= nil)
 check("raid log row shows the seeded daler gain (+150d)",
       city_all:find("150", 1, true) ~= nil)

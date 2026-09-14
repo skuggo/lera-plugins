@@ -104,32 +104,53 @@ local function longship_lines(add, width)
     -- empty crew -- both are "not fully crewed," and pagelib has no orange.
     local crew_color = crew >= crew_max and C.bright_green or C.red
     local state_color = SHIP_STATE_ANSI[sh.state] or C.dim
-    local target = ""
-    if sh.target and sh.target ~= "" and sh.state ~= "docked" then
-      target = " -> " .. sh.target .. ((sh.convoy == 1) and " (convoy)" or "")
-    end
+    -- A docked ship's stale target is not shown. Kept as a flag rather than a
+    -- prebuilt string so the row below has one place that decides how a target
+    -- is coloured and spelled.
+    local has_target = sh.target and sh.target ~= "" and sh.state ~= "docked"
     -- Name and tier were already %-padded, but the state was not -- so
     -- "Crew:" slid with the length of "docked"/"returning"/"upgrading", and
     -- the trailing target pushed it further. State now has its own column and
     -- the variable-length target moves to the END of the row, after Crew, so
     -- every fixed field stacks down the page.
-    add(pagelib.trunc(string.format("%-12s %-10s %s%-10s%s  Crew:%s%d/%d%s%s",
-      sh.name or "?", tier_name,
-      state_color, sh.state or "docked", pagelib.RESET,
-      crew_color, crew, crew_max, pagelib.RESET, target), width))
+    -- Colours added here are NEW, not decoded from LEGACY like the workbook
+    -- entries above: LEGACY drew the name, tier, target, countdown and saga
+    -- line plain, so a fleet of ten ships was a wall of undifferentiated text
+    -- with only the state and crew picked out. Hues are chosen to match this
+    -- file's existing vocabulary rather than invented: the target takes the
+    -- same yellow raids_lines already gives an Auto-Raid target, and the
+    -- countdown takes cyan, the neutral "pending" hue.
+    --
+    -- Every colour wraps an ALREADY-PADDED field. Putting an escape inside a
+    -- "%-12s" would have the padding count the escape bytes and the columns
+    -- would drift apart by row.
+    add(pagelib.trunc(
+      C.bright_white .. string.format("%-12s", sh.name or "?") .. pagelib.RESET
+      .. " " .. C.dim .. string.format("%-10s", tier_name) .. pagelib.RESET
+      .. " " .. state_color .. string.format("%-10s", sh.state or "docked") .. pagelib.RESET
+      .. "  " .. C.dim .. "Crew:" .. pagelib.RESET
+      .. crew_color .. crew .. "/" .. crew_max .. pagelib.RESET
+      .. (has_target and (C.dim .. " -> " .. pagelib.RESET .. C.yellow
+          .. (sh.target or "") .. pagelib.RESET
+          .. ((sh.convoy == 1) and (C.dim .. " (convoy)" .. pagelib.RESET) or "")) or ""),
+      width))
     if sh.return_in and sh.return_in > 0 then
-      add(pagelib.trunc("  " .. cc.fmt_time(sh.return_in), width))
+      add(pagelib.trunc("  " .. C.cyan .. cc.fmt_time(sh.return_in) .. pagelib.RESET, width))
     elseif sh.state == "upgrading" then
       for _, su in ipairs(S.ship_upgrades or {}) do
         if su.name == sh.name and su.secs_left and su.secs_left > 0 then
-          add(pagelib.trunc("  " .. cc.fmt_time(su.secs_left), width))
+          add(pagelib.trunc("  " .. C.cyan .. cc.fmt_time(su.secs_left) .. pagelib.RESET, width))
           break
         end
       end
     end
     if sh.saga_title and sh.saga_title ~= "" then
-      add(pagelib.trunc(string.format("  %s %s  (%d raids)",
-        sh.name, sh.saga_title, sh.saga_raids or 0), width))
+      -- The earned title is the flourish on this line, so it carries the
+      -- colour; the raid count behind it is a footnote and stays dim.
+      add(pagelib.trunc("  " .. C.bright_white .. (sh.name or "?") .. pagelib.RESET
+        .. " " .. C.magenta .. sh.saga_title .. pagelib.RESET
+        .. "  " .. C.dim .. string.format("(%d raids)", sh.saga_raids or 0) .. pagelib.RESET,
+        width))
     end
     local dur = sh.durability or 100
     if dur < 100 then

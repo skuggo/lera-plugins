@@ -166,7 +166,34 @@ check("management cap overrides mirrored tier", compact:find("9/20", 1, true) ~=
 check("fractional herd stats and generation visible", compact:find("H:50.01", 1, true)
   and compact:find("Gen:8.25", 1, true))
 check("fractional age visible", compact:find("Age:40.50", 1, true) ~= nil)
-check("concise pen safety metadata visible", compact:find("Penfree:9  pending:2  protected:9  auto-cull:off", 1, true) ~= nil)
+-- "Pen free:" (spaced) since the labels are now dim and the values coloured;
+-- asserted on the plain text so this stays a content check, with the colouring
+-- itself covered separately below.
+check("concise pen safety metadata visible",
+      compact:find("Pen free:9  pending:2  protected:9  auto-cull:off", 1, true) ~= nil, compact)
+
+-- ---- Pen management colouring ----------------------------------------------
+-- Free pen space gates buying, so it is the one figure here with a good/bad
+-- polarity: green while there is room, red at zero. The other counts stay
+-- neutral. Asserted on the RAW text, since plain() would strip exactly what
+-- is under test.
+do
+  local C = require("pagelib").C
+  require("handlers.livestock")._gmcp.HERDS({ { bldg = "stable", head = 9,
+    management = "20;2;9;9;0;0;4050;825;5001,5025,5100,5200,5300,5400" } })
+  local raw = joined(140)
+  check("pen: a free pen reads green", raw:find(C.bright_green .. "9", 1, true) ~= nil, raw)
+  check("pen: labels are dim", raw:find(C.dim .. "pending:", 1, true) ~= nil, raw)
+  -- Zero free pen space is the state that blocks auto-buy, so it must not look
+  -- like the healthy case. Fields are cap;pending;free;protected;..., and the
+  -- handler rejects a herd whose free does not equal cap-head-pending, so the
+  -- cap moves to 11 (11-9-2=0) rather than free simply being written to 0.
+  require("handlers.livestock")._gmcp.HERDS({ { bldg = "stable", head = 9,
+    management = "11;2;0;9;0;0;4050;825;5001,5025,5100,5200,5300,5400" } })
+  local full = joined(140)
+  check("pen: no free space reads red", full:find(C.red .. "0", 1, true) ~= nil, full)
+end
+
 for _, line in ipairs(page.lines(40)) do
   check("compact page stays within narrow width", #(line:gsub("\027%[[%d;]*m", "")) <= 40)
 end
@@ -175,4 +202,24 @@ if failures > 0 then
   print(failures .. " FAILURE(S)")
   os.exit(1)
 end
+-- ---- Needs table -----------------------------------------------------------
+-- The server's _v_lneeds() skips any species already at cap, so this table is
+-- a restocking list and never a herd inventory -- titling it "Current/Cap"
+-- made a full pen look like a missing one. The shortfall is spelled out so it
+-- does not have to be subtracted by eye.
+do
+  S.lneeds = {
+    { species = "sheep", current = 71, cap = 80 },
+    { species = "horses", current = 39, cap = 40 },
+  }
+  page_opts.set("show_stock_needs", true)
+  local text = plain(80)
+  check("needs: the table is titled as understocked, not as an inventory",
+        text:find("Understocked", 1, true) ~= nil
+        and text:find("Current/Cap", 1, true) == nil, text)
+  check("needs: the shortfall is shown rather than left to be subtracted",
+        text:find("-9", 1, true) ~= nil and text:find("-1", 1, true) ~= nil, text)
+  S.lneeds = {}
+end
+
 print("all livestock page cases passed")
