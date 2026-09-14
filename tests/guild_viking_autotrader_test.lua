@@ -417,10 +417,10 @@ check("pick_cart: no idle carts at all returns nil", at_core.pick_cart("stock", 
 
 -- Fullish DERIVED from real warehouse_pct (no wh_full argument at all):
 -- grain 350 / cap 400 (tier 1) = floor(87.5) = 87% >= 85 -> heavy branch.
-seed_wstock( "grain|350|100")
+seed_wstock( "grain|437|100")
 seed_buildings( "warehouse:1")
 seed_cidle( "1|1|100|40|standard;2|2|90|60|heavy;3|1|80|30|speed")
-check("warehouse_pct: 350/400 = 87 (hand-computed: floor(350/400*100))",
+check("warehouse_pct: 437/500 = 87 (hand-computed: floor(437/500*100))",
       at_core.warehouse_pct() == 87, at_core.warehouse_pct())
 check("pick_cart: derived fullish (87% >= 85) with no wh_full arg still prefers heavy (id2)",
       cart_id(at_core.pick_cart("stock", nil, nil)) == 2)
@@ -725,7 +725,7 @@ check("plan/use-stock arb leg: exactly ONE sell command, no buy leg at all",
 -- 400), with NO use_stock/auto_stock and a deliberately weak score (-3,
 -- below AT_SELL_MIN_SCORE) that would normally hold it back.
 --
---   warehouse_pct = floor(380/400*100) = 95 >= 85 -> wh_full/overflow = true
+--   warehouse_pct = floor(475/500*100) = 95 >= 85 -> wh_full/overflow = true
 --   qty (top-level, and again at dispatch) = min(380, cart_cap 200, demand
 --     1000) = 200
 --   gain = floor(200*20*1.0 + 0.5) = 4000 (direct_sell_quality = 1.0: ore is
@@ -735,7 +735,7 @@ fake_now = fake_now + 1000
 S.autotrade = nil
 at_core.settings()
 seed_buildings( "warehouse:1")
-seed_wstock( "ore|380|100")
+seed_wstock( "ore|475|100")
 seed_staff( "")
 seed_blocks( "")
 seed_carts( "")
@@ -744,7 +744,7 @@ seed_tqueue( "")
 seed_daler( "1000")
 seed_tgoods( "2=o:-3:0:1000:0:20")
 
-check("plan/warehouse-full sanity: 380/400 = 95% >= 85", at_core.warehouse_pct() == 95, at_core.warehouse_pct())
+check("plan/warehouse-full sanity: 475/500 = 95% >= 85", at_core.warehouse_pct() == 95, at_core.warehouse_pct())
 
 local p3 = plan.build()
 check("plan/warehouse-full stock dispatch: exactly one job", p3 and #p3.jobs == 1, p3 and #p3.jobs)
@@ -1005,7 +1005,7 @@ check("plan/empty-plan case: status exact",
 -- stock dispatch" case above): produces EXACTLY one job, as a single-command
 -- transaction ("vtrade dispatch sell 200 ore eiriksson"), so the state
 -- machine's idle->sending->confirming cycle can be walked one command at a
--- time. warehouse_pct = floor(380/400*100) = 95 >= 85 -> overflow/wh_full;
+-- time. warehouse_pct = floor(475/500*100) = 95 >= 85 -> overflow/wh_full;
 -- qty = min(380, cart cap 200, demand 1000) = 200; gain =
 -- floor(200*20*1.0 + 0.5) = 4000 (direct_sell_quality = 1.0: ore is neither
 -- graded nor perishable).
@@ -1013,7 +1013,7 @@ local function setup_single_dispatch_fixture()
   S.autotrade = nil
   at_core.settings()
   seed_buildings( "warehouse:1")
-  seed_wstock( "ore|380|100")
+  seed_wstock( "ore|475|100")
   seed_staff( "")
   seed_blocks( "")
   seed_carts( "")
