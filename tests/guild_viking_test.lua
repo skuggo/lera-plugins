@@ -284,7 +284,8 @@ local function seed_staff(str)
                               loyalty = tonumber(f[6]) or 3, age = f[7],
                               arrive = tonumber(f[8]) or 0 }
   end
-  fixture_gmcp("Guild.Roster", { staff = entries })
+  fixture_gmcp("Guild.Roster", { staff_0 = entries,
+                         staff_total = #entries, staff_shown = #entries })
 end
 
 local function seed_blocks(str)

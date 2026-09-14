@@ -225,8 +225,32 @@ end
 -- parsed here exactly as the MIP handler parses it, against the same
 -- STAFF_STAT_ORDER. The record also carries `id` and `best_stat`, which MIP
 -- never sent and nothing reads; they are ignored rather than stored.
-local function write_staff(records)
-  if type(records) ~= "table" then return end
+-- staff is a COMPOSITE now: the server caps the roster and splits it into
+-- staff_0, staff_1, ... plus staff_total/staff_shown, because a full roster
+-- does not fit a package's 8-page budget and the pager drops an oversized
+-- list whole rather than truncating it. This writer stitches the chunks back
+-- together in order.
+--
+-- A delta may carry any subset of the chunks, so a frame that omits them all
+-- must leave the list alone rather than blanking it -- the same rule as
+-- write_refinery's grades and write_wstock's cap.
+local function write_staff(parts)
+  if type(parts) ~= "table" then return end
+
+  if parts.staff_total ~= nil then S.staff_total = tonumber(parts.staff_total) or 0 end
+  if parts.staff_shown ~= nil then S.staff_shown = tonumber(parts.staff_shown) or 0 end
+
+  local records = {}
+  local carried = false
+  for i = 0, 3 do
+    local chunk = parts["staff_" .. i]
+    if type(chunk) == "table" then
+      carried = true
+      for _, r in ipairs(chunk) do records[#records + 1] = r end
+    end
+  end
+  if not carried then return end
+
   S.staff_list = {}
   for _, r in ipairs(records) do
     if #S.staff_list >= 50 then break end

@@ -79,6 +79,11 @@ M.COMPOSITE = {
   -- four MIP keys its data used to arrive on. It is declared composite for the
   -- ordinary reason: eleven GMCP keys, one writer, and a delta frame that may
   -- carry any subset of them.
+  -- staff's chunk keys plus its two counters reach one writer: a delta may
+  -- carry any subset, and the writer has to see them together to rebuild the
+  -- list in order without a half-applied frame blanking it.
+  STAFF     = { "staff_total", "staff_shown",
+                "staff_0", "staff_1", "staff_2", "staff_3" },
   VITALS    = { "hp", "sp", "points", "chain", "gxp", "tox", "fx",
                 "encounter", "target", "ledung", "bars" },
   -- Guild.Kingdom. army and dynasty each flatten a nested container out of
@@ -177,7 +182,13 @@ local MAP = {
 
   -- Guild.Roster. gneeds and rneeds are deliberately absent: they have no MIP
   -- counterpart and no consumer, so they stay counted under their own names.
-  staff = "STAFF", hird = "HIRD", bonds = "BONDS", train = "TRAIN",
+  -- staff arrives capped and chunked (staff_0, staff_1, ...) with its own
+  -- total/shown scalars, the same shape Guild.Market's order book uses: a
+  -- 64-staff roster does not fit a package's 8-page budget, so the server
+  -- sends a bounded prefix that SAYS it is one.
+  staff_total = "STAFF", staff_shown = "STAFF",
+  staff_0 = "STAFF", staff_1 = "STAFF", staff_2 = "STAFF", staff_3 = "STAFF",
+  hird = "HIRD", bonds = "BONDS", train = "TRAIN",
   thralls = "THRALLS", thrall_follower = "THRALL_FOLLOWER",
   courier = "COURIER", courier_tier = "COURIER",
   spy = "SPY", spy_scouts = "SPY",

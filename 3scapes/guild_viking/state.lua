@@ -160,6 +160,8 @@ local state = {
   mission_new_left = -1,  -- newbie errands remaining this period (-1 = unknown)
   bdmg     = {},   -- { bldg_id, pct }
   staff_list = {},  -- { name, assigned_to, stat_key, stats={combat=N,...}, trait, loyalty, age, arrive_at }
+  staff_total = 0,  -- how many staff the guild actually has
+  staff_shown = 0,  -- how many of them fit in the push (see write_staff)
   hird_list  = {},  -- { name, status, level, mode }
   hird_by_id = {},  -- [id] = hird record (populated when server sends id-prefixed HIRD packet)
   bonds_list  = {},  -- { id_a, id_b, ticks, tier }

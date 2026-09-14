@@ -45,7 +45,10 @@ end
 -- `stats` is a comma-joined string in a fixed order on both transports; the
 -- server builds exactly one such string and MIP embeds it, so the parse is the
 -- same. The order is combat,trade,craft,sea,wild,land,charm.
-roster({ staff = {
+-- staff arrives CHUNKED: the server caps the roster and splits it into
+-- staff_0/staff_1/... with staff_total/staff_shown alongside, because a full
+-- roster does not fit a package's page budget.
+roster({ staff_total = 1, staff_shown = 1, staff_0 = {
   { id = 3, name = "Ingrid", assigned = "smithy", stat = "craft",
     stats = "10,20,30,40,50,60,70", trait = "diligent", loyalty = 5,
     age = "young", arrive = 1234, best_stat = "charm" },
@@ -58,21 +61,34 @@ check("staff stat lands on stat_key", st.stat_key == "craft", st.stat_key)
 check("staff arrive lands on arrive_at", st.arrive_at == 1234, st.arrive_at)
 check("staff scalar fields", st.name == "Ingrid" and st.trait == "diligent"
       and st.loyalty == 5 and st.age == "young")
+check("staff counters land", S.staff_total == 1 and S.staff_shown == 1,
+      S.staff_total .. "/" .. S.staff_shown)
 -- The stat string is positional, so a decoder that mapped it to the wrong
 -- names would still produce seven numbers. Each is named here.
 check("staff stats map to their names in order",
       st.stats.combat == 10 and st.stats.trade == 20 and st.stats.craft == 30
       and st.stats.sea == 40 and st.stats.wild == 50 and st.stats.land == 60
       and st.stats.charm == 70)
-roster({ staff = { { name = "Bare" } } })
+roster({ staff_0 = { { name = "Bare" } } })
 check("staff defaults match the MIP handler's",
       S.staff_list[1].assigned_to == "0" and S.staff_list[1].stat_key == ""
       and S.staff_list[1].trait == "0" and S.staff_list[1].loyalty == 3
       and S.staff_list[1].age == "veteran" and S.staff_list[1].arrive_at == 0)
-local many = {}
-for i = 1, 60 do many[i] = { name = "S" .. i } end
-roster({ staff = many })
+-- The chunks stitch back together in order, and the client keeps its own
+-- 50-record ceiling as a backstop under the server's cap.
+local many_a, many_b = {}, {}
+for i = 1, 30 do many_a[i] = { name = "A" .. i } end
+for i = 1, 30 do many_b[i] = { name = "B" .. i } end
+roster({ staff_0 = many_a, staff_1 = many_b })
+check("chunks are stitched in order", S.staff_list[1].name == "A1"
+      and S.staff_list[31].name == "B1", S.staff_list[31].name)
 check("staff cap at 50", #S.staff_list == 50, #S.staff_list)
+
+-- A delta carrying neither chunk must leave the roster alone. Blanking it
+-- here is the bug that took the grades off the Refineries panel.
+roster({ staff_total = 64 })
+check("a chunkless delta keeps the roster", #S.staff_list == 50, #S.staff_list)
+check("but still updates the counter", S.staff_total == 64, S.staff_total)
 
 -- ---- bonds -----------------------------------------------------------------
 roster({ bonds = { { a = 3, b = 7, ticks = 12, tier = 2 } } })
