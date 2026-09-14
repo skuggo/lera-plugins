@@ -276,10 +276,31 @@ function M.lines(width)
   local enemy_name = (S.mob_name_full and S.mob_name_full ~= "None") and S.mob_name_full
     or ((S.en5 and S.en5 ~= "None") and S.en5 or "None")
   add(pagelib.kv(width, "Target:", enemy_name, S.combat and C.bright_red or C.dim))
-  add(pagelib.trunc(string.format(
-    "En:%s Status:%s Rounds:%d Est:%d%%",
-    S.en5 or "None", (S.ens and S.ens ~= "") and S.ens or "-", S.rndz or 0, S.estatus_pct or 0),
-    width))
+  -- "En:" is dropped: S.en5 is the wire's five-character truncation of the
+  -- same mob the Target line above already names in full ("Growi" for "a
+  -- growing mutated cur"), so it was a worse copy of the line directly above
+  -- it.
+  --
+  -- Both remaining health figures are coloured with pagelib.pct_color, the
+  -- same green-to-red ramp the rest of the pane uses for a health reading.
+  -- Not inverted to "green means nearly dead": a health percentage reads as a
+  -- health bar everywhere else in this plugin, and making this one alone run
+  -- the other way would be a trap at a glance mid-fight.
+  do
+    local ens = (S.ens and S.ens ~= "") and S.ens or "-"
+    -- The wire's status text is usually a percentage ("8%"); colour it on that
+    -- number when there is one and leave any non-numeric status neutral.
+    local ens_pct = tonumber(tostring(ens):match("^(%d+)"))
+    local ens_col = ens_pct and pagelib.pct_color(ens_pct) or C.white
+    local est = S.estatus_pct or 0
+    add(pagelib.trunc(
+      C.dim .. "Status:" .. pagelib.RESET .. ens_col .. ens .. pagelib.RESET
+      .. "  " .. C.dim .. "Rounds:" .. pagelib.RESET
+      .. C.white .. tostring(S.rndz or 0) .. pagelib.RESET
+      .. "  " .. C.dim .. "Est:" .. pagelib.RESET
+      .. pagelib.pct_color(est) .. est .. "%" .. pagelib.RESET,
+      width))
+  end
 
   -- ---- Active effects / STFX (7349-7382, gated show_stats_buffs) ------
   if S.stfx and #S.stfx > 0 and page_opts.get("show_stats_buffs") then

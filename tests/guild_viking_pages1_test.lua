@@ -119,6 +119,38 @@ if hp_idx then
         hp_line:find("#", 1, true) ~= nil and hp_line:find("%-%-") ~= nil, hp_line)
 end
 
+-- ---- Enemy line -------------------------------------------------------------
+-- The fixture sets en5="Wolf" (the wire's five-char truncation) alongside
+-- mob_name_full="Grey Wolf". The truncation must NOT be rendered: the Target
+-- line directly above already names the same mob in full, so "En:Wolf" was a
+-- worse copy of the line above it.
+do
+  local strip = function(t) return (t:gsub("\27%[[%d;]*m", "")) end
+  local enemy_idx = find_line(lines, "Enemy")
+  local status_line
+  for i = (enemy_idx or 1), #lines do
+    if strip(lines[i]):find("Status:", 1, true) then status_line = lines[i]; break end
+  end
+  check("stats: the Enemy block has a status line", status_line ~= nil, all)
+  if status_line then
+    local plain = strip(status_line)
+    check("stats: the redundant En: truncation is gone",
+          plain:find("En:", 1, true) == nil, plain)
+    check("stats: status, rounds and estimate all still render",
+          plain:find("Status:low", 1, true) ~= nil
+          and plain:find("Rounds:3", 1, true) ~= nil
+          and plain:find("Est:42%", 1, true) ~= nil, plain)
+    -- 42% falls in pct_color's red tier (> 0.25, <= 0.5). Asserted by tier
+    -- rather than by literal escape so the check survives a palette rename.
+    check("stats: the estimate is coloured by its percentage",
+          status_line:find(pagelib.C.red .. "42%", 1, true) ~= nil, status_line)
+    -- "low" is not numeric, so it gets the neutral colour rather than a
+    -- percentage ramp read off a string that has no number in it.
+    check("stats: a non-numeric status is left neutral",
+          status_line:find(pagelib.C.white .. "low", 1, true) ~= nil, status_line)
+  end
+end
+
 -- ---- section headers present, in order --------------------------------------
 local section_order = { "Vitals", "Ledung / Chain", "God", "Saga XP", "Enemy", "Active Effects",
                          "Automation" }
