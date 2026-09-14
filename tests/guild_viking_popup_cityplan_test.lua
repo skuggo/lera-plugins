@@ -313,15 +313,17 @@ offset = cityplan.grid_line_offset(WIDTH)
 --
 -- The 7x7 grid is a 5x5 castle at margin (1,1) on terrain "W" border /
 -- "." fill. Castle border cells are c==1, c==5, r==1 or r==5; interior cells
--- are the open courtyard (glyph "", so an uncolored blank); throne_room at
--- plan (2,2) lands on grid (3,3) and renders as itself.
+-- are the open courtyard, which shows the ground underneath ("." here) the
+-- way the MUD's own vplan does -- LEGACY's hard blank left a hole in the
+-- middle of a walled city that the game never draws; throne_room at plan
+-- (2,2) lands on grid (3,3) and renders as itself.
 local wall = C.dim .. "#" .. RESET   -- terrain "W" AND castle border, same spec
-local courtyard = " "                 -- glyph "" -> plain blank, no color escapes
+local courtyard = C.dim .. "." .. RESET  -- castle_cell yields, terrain shows
 local throne = EXPECT_PAL.T .. "K" .. RESET
 
 check("grid row 1 (CPT01) is all wall: terrain W, then the keep's top border",
   lines[offset + 2] == string.rep(wall, 7), lines[offset + 2])
-check("grid row 2 (CPT02): terrain + border, three blank courtyard cells, border + terrain",
+check("grid row 2 (CPT02): terrain + border, three open courtyard cells, border + terrain",
   lines[offset + 3] == wall .. wall .. string.rep(courtyard, 3) .. wall .. wall,
   lines[offset + 3])
 check("grid row 3 (CPT03): throne_room overwrites the courtyard cell at (3,3)",

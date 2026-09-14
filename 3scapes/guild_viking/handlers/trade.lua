@@ -721,8 +721,20 @@ end
 -- an empty grade label stays nil so the pages can test it for presence.
 local function write_wstock(parts)
   if type(parts) ~= "table" then return end
+  -- The cap is written BEFORE the entry-list guard below, and only when this
+  -- frame actually carried it. A composite writer is invoked with whichever
+  -- halves the frame had (protocol.lua:58-63), so a delta carrying only
+  -- `wstock_cap` is normal -- and returning early on a missing entry list
+  -- discarded it, leaving S.wh_cap nil so pages/city.lua and autotrader fell
+  -- back to their static per-tier tables. Those hold the pre-2024 base
+  -- capacity, so a T5 warehouse displayed 5250 instead of the real
+  -- query_warehouse_capacity() figure (9056 with steward/lager/star bonuses).
+  -- Testing for presence rather than assigning unconditionally also stops an
+  -- entries-only delta from nil-ing out a cap that had already arrived.
+  if parts.wstock_cap ~= nil then
+    S.wh_cap = tonumber(parts.wstock_cap)
+  end
   if type(parts.wstock) ~= "table" then return end
-  S.wh_cap = tonumber(parts.wstock_cap)
   S.wstock = {}
   S.wstock_by_good = {}
   for _, r in ipairs(parts.wstock) do

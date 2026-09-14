@@ -325,9 +325,12 @@ check("placed buildings", #cp.blds == 2 and cp.blds[1].id == "BLDG_SMITHY"
       and cp.blds[1].x == 2 and cp.blds[1].y == 3 and cp.blds[1].w == 2
       and cp.blds[1].h == 2 and cp.blds[1].pal == "r"
       and cp.blds[1].glyph == "S" and cp.blds[1].name == "Smithy")
--- A building with no name renders under its own id, as it did over MIP.
-check("a nameless building falls back to its id",
-      cp.blds[2].name == "BLDG_APIARY" and cp.blds[2].w == 1
+-- The wire no longer carries `name` for every building: _cp_name() is a pure
+-- Title-Case render of the id (city_plan.h), so the client rebuilds it and the
+-- server saves ~40% of the frame. capitalize() only touches the first letter of
+-- each word, so an already-upper id comes back unchanged bar the underscore.
+check("a nameless building is rebuilt from its id, server-style",
+      cp.blds[2].name == "BLDG APIARY" and cp.blds[2].w == 1
       and cp.blds[2].pal == "e" and cp.blds[2].glyph == "?")
 check("placeable buildings", #cp.unplaced == 1
       and cp.unplaced[1].id == "BLDG_MOAT" and cp.unplaced[1].name == "Moat")

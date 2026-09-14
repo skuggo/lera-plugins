@@ -276,11 +276,14 @@ local function castle_cell(occ, margin, c, r)
   local x0, y0 = (occ.x or 0) + margin, (occ.y or 0) + margin
   local border = c == x0 or c == x0 + bw - 1 or r == y0 or r == y0 + bh - 1
   if border then return { glyph = "#", color = C.dim } end
-  -- Open courtyard: LEGACY draws no glyph at all here (gcol is set but
-  -- never used, since glyph == "" skips the WindowText call entirely) --
-  -- color = nil rather than C.dim so maplib's glyph field renders as plain
-  -- blank space instead of a pointless color-wrapped one.
-  return { glyph = "" }
+  -- Open courtyard. Returns nil so make_grid() falls through to the terrain
+  -- cell underneath, which is what the MUD's own vplan does: its castle
+  -- overlay paints the keep wall and leaves the interior showing the ground
+  -- ('.', or whatever terrain is there). LEGACY drew a hard blank here, and
+  -- carrying that over left a hole in the middle of the plan that did not
+  -- match the game -- rows F/G/H of a walled city came out empty where the
+  -- MUD shows plain ground.
+  return nil
 end
 
 local function terrain_cell(cp, c, r)
@@ -300,7 +303,10 @@ local function make_grid(cp)
     cell = function(c, r)
       local occ = overlay[r] and overlay[r][c]
       if occ and occ.id == "castle" then
-        return castle_cell(occ, margin, c, r)
+        -- nil = open courtyard: show the ground under it, as the MUD does.
+        local cc = castle_cell(occ, margin, c, r)
+        if cc then return cc end
+        return (terrain_cell(cp, c, r))
       elseif occ then
         return { glyph = occ.glyph or "?", color = CITYPLAN_PAL[occ.pal] or CITYPLAN_PAL_FALLBACK }
       end
