@@ -345,5 +345,56 @@ check("seed: a targeted response does not move the cwd",
       "a completion request must never relocate the wizard; got "
         .. tostring(protocol.cwd()))
 
+-- ---- fast cds -------------------------------------------------------------
+--
+-- Two cds in quick succession send two "where am I" requests before either is
+-- answered. The replies arrive in order: the first names the directory the
+-- wizard has already left, the second the one they are in. The pane must end
+-- up on the second.
+protocol.reset()
+sent = {}
+protocol.set_cwd("/players/skuggis", true)
+protocol.request(nil)                       -- cd /players/genx
+protocol.request(nil)                       -- cd /players/elemental, typed fast
+protocol.on_message("Files.List", { path = "/players/genx", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("fast cd: a stale reply does not move the pane while a newer cd is pending",
+      protocol.cwd() == "/players/skuggis", tostring(protocol.cwd()))
+protocol.on_message("Files.List", { path = "/players/elemental", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("fast cd: the latest cd's reply wins",
+      protocol.cwd() == "/players/elemental", tostring(protocol.cwd()))
+
+-- A Tab completion sent between two cds answers its own path and must not be
+-- taken for a seed, even with seeds outstanding on either side of it.
+protocol.reset()
+sent = {}
+protocol.set_cwd("/players/skuggis", true)
+protocol.request(nil)
+protocol.request("/obj")
+protocol.request(nil)
+protocol.on_message("Files.List", { path = "/players/genx", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+protocol.on_message("Files.List", { path = "/obj", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("fast cd: a targeted reply between seeds does not move the pane",
+      protocol.cwd() == "/players/skuggis", tostring(protocol.cwd()))
+protocol.on_message("Files.List", { path = "/players/elemental", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("fast cd: and the last seed still lands",
+      protocol.cwd() == "/players/elemental", tostring(protocol.cwd()))
+
+-- A request whose reply never came must not shift every later reply onto the
+-- wrong request: the lost one is skipped when a later reply matches.
+protocol.reset()
+sent = {}
+protocol.set_cwd("/players/skuggis", true)
+protocol.request("/lost")                   -- never answered
+protocol.request(nil)
+protocol.on_message("Files.List", { path = "/players/genx", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("fast cd: a lost reply ahead in the queue is skipped",
+      protocol.cwd() == "/players/genx", tostring(protocol.cwd()))
+
 print(failures == 0 and "ALL PASS" or (failures .. " FAILURE(S)"))
 os.exit(failures == 0 and 0 or 1)
