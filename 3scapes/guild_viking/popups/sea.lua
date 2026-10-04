@@ -81,6 +81,7 @@
 --     hint) so it stays legible without opening the menu.
 local pagelib = require("pagelib")
 local maplib = require("maplib")
+local details = require("popups.hover_details")
 local state = require("state")
 local page_opts = require("page_opts")
 local common = require("popups.sea_common")
@@ -289,7 +290,8 @@ local function chart_lines(width)
   for _, l in ipairs(maplib.render(make_chart_grid(), chart_grid_opts())) do
     out[#out + 1] = l
   end
-  out[#out + 1] = hover ~= "" and pagelib.trunc(hover, width) or ""
+  details.append_grid(out, hover, width, S.voyage_chart_width or 0, S.voyage_chart_height or 0,
+    chart_hover_text)
   if page_opts.get("show_sea_chart_legend") then
     for _, l in ipairs(maplib.legend(width, legend_entries())) do out[#out + 1] = l end
   end

@@ -199,6 +199,22 @@ end
 
 -- Title-case each word -- ported from the Raids-section-local `tcase`
 -- helper (guild_viking.lua:7775-7777), used for raid/target town names.
+-- Proper case for a PLACE name. tcase() capitalises every word, which reads
+-- wrong on the war board's names ("The Old Fort At Kaldheim"); the small
+-- connecting words stay lower unless they open the name.
+local PCASE_SMALL = { ["of"] = true, ["at"] = true, ["the"] = true,
+                      ["in"] = true, ["on"] = true, ["and"] = true,
+                      ["by"] = true, ["under"] = true }
+function M.pcase(s)
+  local first = true
+  return (tostring(s or ""):gsub("(%a)([%w']*)", function(a, b)
+    local word = (a .. b):lower()
+    if not first and PCASE_SMALL[word] then first = false; return word end
+    first = false
+    return a:upper() .. b:lower()
+  end))
+end
+
 function M.tcase(s)
   return (tostring(s or ""):gsub("(%a)([%w']*)", function(a, b) return a:upper() .. b:lower() end))
 end

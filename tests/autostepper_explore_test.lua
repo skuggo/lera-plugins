@@ -972,6 +972,27 @@ check("the second correction also reaches lera.log", #logged == 2, tostring(#log
 check("the second correction does NOT reach the screen -- only the first per run",
   #screen_logged == 1, tostring(#screen_logged))
 
+-- A nil from next_step() is only exhaustion when stop_reason() says so. Asked
+-- again before the emitted move has arrived, it must say the move is in
+-- flight -- reported as exhaustion, that nil ends a run with rooms left.
+do
+  quiet(function() mode.start(profile, "clear") end)
+  frame({ name = "Layer one of the Sea of Chaos", exits = { "e", "w" } })
+  quiet(mode.on_arrival)
+  local first = mode.next_step()
+  local again = mode.next_step()
+  check("a step with a move in flight is not exhaustion",
+    first ~= nil and again == nil and mode.stop_reason() == "in flight",
+    tostring(mode.stop_reason()))
+  frame({ name = "Layer one of the Sea of Chaos", exits = { "w" } })
+  quiet(mode.on_arrival)
+  check("once the move lands the frontier is offered again",
+    mode.next_step() ~= nil)
+  mode.stop()
+  check("a stopped mode's nil is not exhaustion",
+    mode.next_step() == nil and mode.stop_reason() == "inactive")
+end
+
 mode.stop()
 mode.discard()
 mode.set_logger(nil)

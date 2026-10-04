@@ -505,13 +505,17 @@ end
 -- which the MIP path expressed by assigning them before the active check.
 -- Kept.
 --
--- `campaign_units` is one merged overlay list where MIP sent three sentinel
--- forms in WMO. Only the three MIP carried are consumed: kind "host" is your
--- stack (id "A"), "objective" is the target (id "*"), and "foe" keeps its
--- numeric id. The server also emits "work", "poi" and "ally" overlays, which
--- MIP never sent and popups/war.lua has no cell rendering for; they are
--- skipped rather than fed in under ids the renderer would not recognise.
--- Rendering them is a feature, not part of a transport change.
+-- `campaign_units` is one merged overlay list. "host" is your stack (id "A"),
+-- "objective" is the target (id "*"), and "foe" keeps its numeric id.
+--
+-- ALLIES AND LANDMARKS used to be dropped here, on the grounds that the
+-- renderer had no cell for them. It does: popups/war_campaign.lua's
+-- unit_cell() already draws "F" in cyan and any "P.." landmark as a "w", and
+-- has since the port. So the overlays the server sends were being thrown away
+-- in front of a renderer that was waiting for them -- the ally never appeared
+-- on the campaign map or in the legend, and Auto-War could not see it either.
+-- An ally keeps its own server id ("F"); a landmark becomes "P1" once taken
+-- and "P*" while it still stands, which is the pair unit_cell() distinguishes.
 local CAMPAIGN_UNIT_ID = { host = "A", objective = "*" }
 
 -- "A1" -> column 0, row 0. The queue labels are 1-based letters-and-digits;
@@ -609,6 +613,7 @@ local function write_campaign(parts)
     return
   end
 
+  local prev_wm = S.war_map
   local wm = {
     active = true,
     dim = tonumber(rec.dim) or 0,
@@ -618,7 +623,22 @@ local function write_campaign(parts)
     town = tostring(rec.town or ""),
     works_budget = tonumber(rec.works_budget) or 0,
     march_eta = tonumber(rec.march_eta) or 0,
-    rows = {}, units = {}, queue = {}, queues = {},
+    -- Guild.Kingdom frames are DELTAS, and these four ride on their own
+    -- sibling keys (campaign_terrain / campaign_units / campaign_queue). A
+    -- frame carrying only a new `campaign` record -- a turn tick, a march ETA
+    -- -- has none of them, and rebuilding them empty threw away terrain that
+    -- had arrived perfectly well: the board then sat on "(waiting for map
+    -- data...)" with the header above it rendering from this same record.
+    -- Carry the previous contents forward; the loops below replace each one
+    -- only when the frame actually carries its key.
+    rows    = (prev_wm and prev_wm.rows)    or {},
+    units   = (prev_wm and prev_wm.units)   or {},
+    -- queue/queues deliberately do NOT carry forward. Their contract is the
+    -- opposite of terrain's: the server stops echoing a queue once it has
+    -- drained, and the pane falls back to its local echo -- so remembering
+    -- the last one would leave a march order on screen that no longer exists.
+    -- popups/war_campaign's own tests pin this.
+    queue = {}, queues = {},
     upkeep = {
       food = tonumber(rec.upkeep_food) or 0,
       mead = tonumber(rec.upkeep_mead) or 0,
@@ -637,19 +657,41 @@ local function write_campaign(parts)
     siege = S.siege,
   }
 
-  for i, row in ipairs(parts.campaign_terrain or {}) do
-    wm.rows[i] = tostring(row)
+  if parts.campaign_terrain ~= nil then
+    wm.rows = {}
+    for i, row in ipairs(parts.campaign_terrain) do
+      wm.rows[i] = tostring(row)
+    end
   end
+  -- Trust the rows over the declared size. `dim` and `campaign_terrain` are
+  -- separate keys, so one can arrive without the other -- a delta frame
+  -- carrying only the terrain, or a size the server could not determine --
+  -- and pages/war.lua tests BOTH before drawing. Deriving the missing half
+  -- from the half that did arrive is what keeps the board from sitting on
+  -- "(waiting for map data...)" with a perfectly good grid in hand.
+  if (wm.dim or 0) < 1 then wm.dim = #wm.rows end
 
+  if parts.battles_won ~= nil then wm.battles_won = tonumber(parts.battles_won) or 0 end
+  if parts.campaign_units ~= nil then wm.units = {} end
   for _, u in ipairs(parts.campaign_units or {}) do
     if type(u) == "table" then
       local kind = tostring(u.kind or "")
       local id = CAMPAIGN_UNIT_ID[kind]
-      if kind == "foe" then id = tostring(u.id or "") end
+      if kind == "foe" or kind == "ally" or kind == "detach" then
+        id = tostring(u.id or "")
+      end
+      if kind == "poi" then id = (tonumber(u.taken) or 0) ~= 0 and "P1" or "P*" end
       if id and id ~= "" then
         wm.units[#wm.units + 1] = {
           id = id, c = tonumber(u.c) or 0, r = tonumber(u.r) or 0,
           size = tonumber(u.size) or 0, f = tostring(u.flag or ""),
+          owner = tostring(u.owner or ""),
+          kind = kind,
+          -- Carried so the legend can read like the text board rather than
+          -- printing a bare glyph and a number.
+          name = (u.name ~= nil and tostring(u.name)) or nil,
+          shaken = tonumber(u.shaken) or 0,
+          taken = (tonumber(u.taken) or 0) ~= 0,
         }
       end
     end
@@ -687,27 +729,87 @@ end
 --
 -- `wall_hp` and `wall_tier` are carried by the payload and have no reader in
 -- popups/war.lua, so they are not stored.
-local function write_battle(rec)
+-- Guild.War frames are DELTAS: gmcp_ns_delta_step() sends only the keys whose
+-- value changed since the last push. This used to read every field off `rec`
+-- unconditionally, so the common mid-battle frame -- the one carrying just a
+-- new `turn` or `spent` -- arrived without `active`, "(tonumber(rec.active)
+-- or 0) ~= 1" was true, and a LIVE battle was wiped. The board vanished from
+-- the War tab a second after it appeared, and autowar.lua (which reads
+-- state.battle to decide whether a battle is underway) fell through to the
+-- campaign planner and re-sent "vcampaign fight" at a battle already open --
+-- the server answering "A battle is already underway (vbattle)".
+--
+-- An absent key means UNCHANGED, never empty. So: clear only when `active`
+-- says 0 outright, start from the battle already held unless the frame is a
+-- full resend, and copy each field only when the frame actually carries it.
+-- The war and battle sagas (saga.h), as { t, tone, text }
+-- records. Its own package, not part of Kingdom: eighty records competing
+-- for Kingdom's eight pages would have pushed later-sorting keys off the
+-- frame (see send_gmcp_saga's comment). Kept on the state root rather than
+-- inside the campaign record, because a saga is how you read back a war
+-- that has already ended and so must survive the map being cleared.
+local function read_saga(src)
+  local out = {}
+  for _, e in ipairs(src or {}) do
+    if type(e) == "table" then
+      out[#out + 1] = { t = tonumber(e.t) or 0,
+                        tone = tostring(e.tone or ""),
+                        text = tostring(e.text or "") }
+    end
+  end
+  return out
+end
+
+-- Called from write_battle: the sagas ride on Guild.War, which
+-- PACKAGE_KEY dispatches as one unit, so they arrive alongside the board.
+local function write_saga(parts)
+  if parts.saga_war ~= nil then S.saga_war = read_saga(parts.saga_war) end
+  if parts.saga_battle ~= nil then S.saga_battle = read_saga(parts.saga_battle) end
+end
+
+local function write_battle(rec, full)
   if type(rec) ~= "table" then return end
-  S.war_points = tonumber(rec.war_points) or 0
-  if (tonumber(rec.active) or 0) ~= 1 then
+  if rec.war_points ~= nil then S.war_points = tonumber(rec.war_points) or 0 end
+
+  -- Before the inactive early-return below: a saga is read back precisely
+  -- when no battle is running.
+  write_saga(rec)
+
+  if rec.active ~= nil and (tonumber(rec.active) or 0) ~= 1 then
     S.battle = nil
     return
   end
+  -- A delta about a battle we never had says nothing we can use.
+  if rec.active == nil and not S.battle then return end
 
+  local prev = (not full) and S.battle or nil
   local b = {
-    phase = tostring(rec.phase or ""),
-    turn = tonumber(rec.turn) or 0,
-    mode = tostring(rec.mode or ""),
-    target = tostring(rec.target or ""),
-    budget = tonumber(rec.budget) or 0,
-    spent = tonumber(rec.spent) or 0,
-    width = tonumber(rec.w) or 8,
-    height = tonumber(rec.h) or 8,
-    dz = tonumber(rec.dz) or 2,
-    war_points = tonumber(rec.war_points) or 0,
-    units = {}, reserve = {},
+    phase      = prev and prev.phase      or "",
+    turn       = prev and prev.turn       or 0,
+    mode       = prev and prev.mode       or "",
+    target     = prev and prev.target     or "",
+    budget     = prev and prev.budget     or 0,
+    spent      = prev and prev.spent      or 0,
+    width      = prev and prev.width      or 8,
+    height     = prev and prev.height     or 8,
+    dz         = prev and prev.dz         or 2,
+    war_points = prev and prev.war_points or 0,
+    terrain      = prev and prev.terrain,
+    terrain_rows = prev and prev.terrain_rows,
+    works_rows   = prev and prev.works_rows,
+    units   = prev and prev.units   or {},
+    reserve = prev and prev.reserve or {},
   }
+  if rec.phase      ~= nil then b.phase      = tostring(rec.phase) end
+  if rec.turn       ~= nil then b.turn       = tonumber(rec.turn) or 0 end
+  if rec.mode       ~= nil then b.mode       = tostring(rec.mode) end
+  if rec.target     ~= nil then b.target     = tostring(rec.target) end
+  if rec.budget     ~= nil then b.budget     = tonumber(rec.budget) or 0 end
+  if rec.spent      ~= nil then b.spent      = tonumber(rec.spent) or 0 end
+  if rec.w          ~= nil then b.width      = tonumber(rec.w) or 8 end
+  if rec.h          ~= nil then b.height     = tonumber(rec.h) or 8 end
+  if rec.dz         ~= nil then b.dz         = tonumber(rec.dz) or 2 end
+  if rec.war_points ~= nil then b.war_points = tonumber(rec.war_points) or 0 end
 
   if type(rec.terrain) == "table" and #rec.terrain > 0 then
     b.terrain_rows = {}
@@ -722,11 +824,19 @@ local function write_battle(rec)
     for i, row in ipairs(rec.works) do b.works_rows[i] = tostring(row) end
   end
 
+  if rec.units ~= nil then b.units = {} end
   for _, u in ipairs(rec.units or {}) do
     if type(u) == "table" then
-      -- `side` is "Y" for yours and anything else for the foe, as it was on
-      -- the wire.
-      local side = (tostring(u.side) == "Y") and "you" or "foe"
+      -- The wire value is the server's own word: battle.h builds every
+      -- company with "side":"you" and compares on that string. This tested
+      -- for "Y" -- MIP's spelling, and MIP is gone -- so EVERY company of
+      -- yours was classified as the foe's.
+      --
+      -- Not a cosmetic miss. The War tab's "Deployed" block filters on
+      -- side == "you" and listed nothing; the board drew your own host in the
+      -- foe's red; and autowar.lua's split_units() saw no units of yours and
+      -- the whole board as hostile, which is what it plans orders from.
+      local side = (tostring(u.side) == "you") and "you" or "foe"
       local utype = tostring(u.type or "")
       -- Allied house levies ride under the hird type because the server reuses
       -- foe_hird for allied aid; the client renames them so they load the
@@ -751,6 +861,7 @@ local function write_battle(rec)
     end
   end
 
+  if rec.reserve ~= nil then b.reserve = {} end
   for _, u in ipairs(rec.reserve or {}) do
     if type(u) == "table" then
       local leader = tostring(u.leader or "")
@@ -766,6 +877,7 @@ local function write_battle(rec)
 
   S.battle = b
 end
+
 
 M._gmcp = {
   RAIDLOG          = write_raidlog,

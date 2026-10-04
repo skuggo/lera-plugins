@@ -224,5 +224,6 @@ popups.register("sea", require("popups.sea"))
 popups.register("voyage", require("popups.voyage"))
 popups.register("cityplan", require("popups.cityplan"))
 popups.register("war", require("popups.war"))
+popups.register("war_saga", require("popups.war_saga"))
 
 return popups

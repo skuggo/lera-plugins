@@ -46,6 +46,7 @@
 -- and this module's send commands both key on.
 local pagelib = require("pagelib")
 local maplib = require("maplib")
+local details = require("popups.hover_details")
 local state = require("state")
 local track = require("popups.pointer_track").tracker()
 
@@ -60,7 +61,25 @@ local track = require("popups.pointer_track").tracker()
 -- it is used. The legacy fallback is a duplicate unit's ordinal,
 -- `tostring(u.ord)`, which would truncate at ord >= 10 -- far past the
 -- handful of same-type units a board carries.
-local GRID_OPTS = { compact = true }
+-- Axis labels, matching the in-game board exactly: letters across the top
+-- (A, B, C...) and 1-based row numbers down the side, which is also how
+-- 'vbattle' names a square ("D2"). The grid was rendered without them, so the
+-- pane showed a field of glyphs with no way to read a coordinate off it.
+local function col_letter(c) return string.char(65 + c) end
+local function row_number(r) return tostring(r + 1) end
+
+-- The battle board counts rows from the BOTTOM: coord_at() names a square
+-- char(65+gc) .. (h - gr), so grid row 0 is game row h. A label of r+1 would
+-- therefore print the axis upside down -- someone reading "1" off the top
+-- row and typing D1 would order a unit to the far end of the field. The
+-- label needs the board's height, so the opts are built per render rather
+-- than shared as a constant.
+local function grid_opts(b)
+  local h = (b and b.height) or 8
+  return { compact = true, col_headers = true, row_headers = true,
+           col_label = col_letter,
+           row_label = function(r) return tostring(h - r) end }
+end
 
 local S = state.S
 local C = pagelib.C
@@ -315,13 +334,15 @@ end
 -- Builds the full line array plus the 1-based index of the "[Actions]"
 -- line (nil if unreachable), in lockstep by construction -- same
 -- discipline popups/sea.lua's pre_chart_lines/actions_line_index follow.
+local hover_text
 local function build_lines(width)
   local out, has_grid = pre_grid_lines(width)
   if not has_grid then return out, nil end
 
   local b = S.battle
-  for _, l in ipairs(maplib.render(make_grid(b), GRID_OPTS)) do out[#out + 1] = l end
-  out[#out + 1] = hover ~= "" and pagelib.trunc(hover, width) or ""
+  for _, l in ipairs(maplib.render(make_grid(b), grid_opts(b))) do out[#out + 1] = l end
+  details.append_grid(out, hover, width, b.width or 8, b.height or 8,
+    function(c, r) return hover_text(b, c, r) end)
   for _, l in ipairs(legend_lines(width, b)) do out[#out + 1] = l end
   out[#out + 1] = pagelib.trunc(string.format(
     "%sCommand %d/%d%s   %sFraegd %d%s",
@@ -329,6 +350,15 @@ local function build_lines(width)
     C.bright_cyan, b.war_points or S.war_points or 0, RESET), width)
   out[#out + 1] = pagelib.trunc(actions_line_text(b), width)
   return out, #out
+end
+
+-- The board alone, without this popup's legend and action lines -- see the
+-- matching M.grid_lines() in popups/war_campaign.lua for why it exists.
+function M.grid_lines()
+  local b = S.battle
+  if not b then return nil, 0 end
+  local grid = make_grid(b)
+  return maplib.render(grid, grid_opts(S.battle)), maplib.geometry(grid, grid_opts(S.battle)).width
 end
 
 function M.lines(width)
@@ -358,7 +388,7 @@ end
 function M.geometry(width)
   local _, has_grid = pre_grid_lines(width)
   if not has_grid then return nil end
-  return maplib.geometry(make_grid(S.battle), GRID_OPTS)
+  return maplib.geometry(make_grid(S.battle), grid_opts(S.battle))
 end
 
 function M.grid_line_offset(width)
@@ -368,7 +398,7 @@ end
 
 -- viking_battle_click's tooltip (guild_viking.lua:14337-14359), flattened
 -- to one line, "\r\n" collapsed to "  " like every other module's hover.
-local function hover_text(b, gc, gr)
+hover_text = function(b, gc, gr)
   local w, h = b.width or 8, b.height or 8
   local r_game = h - gr
   local coord = coord_at(gc, gr, h)
@@ -384,7 +414,11 @@ local function hover_text(b, gc, gr)
 
   local tip
   if u then
-    tip = coord .. "  " .. (u.label or "unit") .. (u.side == "you" and " (yours)" or " (enemy)")
+    local label = u.label and u.label ~= "" and u.label or ULABEL[u.utype or ""] or "unit"
+    tip = coord .. "  " .. label .. (u.side == "you" and " (yours)" or " (enemy)")
+    if u.utype and u.utype ~= "" then tip = tip .. "  Type: " .. u.utype:gsub("_", " ") end
+    if u.leader and u.leader ~= "" then tip = tip .. "  Leader: " .. u.leader end
+    if u.owner and u.owner ~= "" then tip = tip .. "  Owner: " .. u.owner end
     if u.size ~= nil then tip = tip .. string.format("  %d men", u.size) end
     if u.morale ~= nil then tip = tip .. string.format("  morale %d", u.morale) end
     tip = tip .. "  on " .. (BTERR_NAME[ch] or "plains")

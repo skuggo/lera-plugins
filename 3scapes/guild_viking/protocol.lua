@@ -174,7 +174,19 @@ end
 -- unknown when no writer is registered (e.g. MONUMENTS, which has no writer
 -- yet -- see composite_of's callers).
 local function dispatch_gmcp(mip_key, value, full)
-  if trace_on then print("[vik] gmcp " .. mip_key) end
+  if trace_on then
+    if mip_key == "VMAP" and type(value) == "table" then
+      local fields = {}
+      for key, item in pairs(value) do
+        local summary = type(item) == "table"
+          and (tostring(#item) .. " entries") or tostring(item)
+        fields[#fields + 1] = tostring(key) .. "=" .. summary
+      end
+      table.sort(fields)
+      print("[vik] Guild.Map fields: " .. table.concat(fields, ", "))
+    end
+    print("[vik] gmcp " .. mip_key)
+  end
   local fn = gmcp_handlers[mip_key]
   if not fn then
     gmcp_stats.unknown[mip_key] = (gmcp_stats.unknown[mip_key] or 0) + 1

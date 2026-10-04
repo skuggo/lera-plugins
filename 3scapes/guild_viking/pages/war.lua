@@ -118,7 +118,24 @@ local C = pagelib.C
 
 local M = {}
 
-local GRID_PLACEHOLDER = "Battle map: /vik war"
+-- Drawing the board inline rather than pointing at a popup. The two views
+-- share popups/war_*.lua's make_grid(), so they cannot drift apart.
+--
+-- Declines and falls back to the old pointer when the board is wider than
+-- the pane: maplib renders at the board's natural width and a page line
+-- wider than its pane would spill, and a war map is not something to read
+-- half of.
+local function grid_or_hint(add, width, mod_name, hint)
+  local ok, mod = pcall(require, mod_name)
+  if ok and mod and mod.grid_lines then
+    local lines, gw = mod.grid_lines()
+    if lines and #lines > 0 and gw <= width then
+      for _, l in ipairs(lines) do add(l) end
+      return
+    end
+  end
+  add(pagelib.trunc(C.dim .. hint .. pagelib.RESET, width))
+end
 
 -- ---------------------------------------------------------------------------
 -- Campaign Map (guild_viking.lua:13620-14016, UNGATED -- war_map.active)
@@ -137,6 +154,17 @@ local function march_eta_text(secs)
   return string.format("%ds", secs)
 end
 
+-- The MUD's own foe-glyph rule (campaign.h:1673): ids 1-9 render as digits,
+-- 10 and up as a, b, c... A numeric id past 9 is two characters wide and
+-- would be truncated to its first digit in a one-char map cell, colliding
+-- with the foe of that digit.
+local function foe_glyph(id)
+  local n = tonumber(id)
+  if not n then return tostring(id) end
+  if n <= 9 then return tostring(n) end
+  return string.char(87 + n)
+end
+
 local function campaign_map_lines(add, width, wm)
   local hdr = string.format("War Campaign: %s  --  turn %d", wm.town or "?", wm.turn or 0)
   if wm.mode == "defense" and (wm.works_budget or 0) > 0 then
@@ -146,11 +174,105 @@ local function campaign_map_lines(add, width, wm)
 
   local dim = wm.dim or #(wm.rows or {})
   if dim < 1 or #(wm.rows or {}) < 1 then
-    add(pagelib.trunc(C.dim .. "(waiting for map data...)" .. pagelib.RESET, width))
+    -- Say WHICH half is missing. "waiting for map data" was the same line for
+    -- a campaign that had only just opened and for one whose terrain never
+    -- arrived, and the two want different reactions from the reader.
+    if #(wm.rows or {}) < 1 then
+      add(pagelib.trunc(C.dim .. "(no terrain yet -- the map has not been drawn)"
+          .. pagelib.RESET, width))
+    else
+      add(pagelib.trunc(C.dim .. "(waiting for map data...)" .. pagelib.RESET, width))
+    end
     return
   end
 
-  add(pagelib.trunc(GRID_PLACEHOLDER, width))
+  grid_or_hint(add, width, "popups.war_campaign",
+               "Campaign map too wide for this pane -- '/vik war'")
+
+  -- The legend the text board prints under the map. Without it the pane showed
+  -- a grid of glyphs and nothing that said what any of them were, what the war
+  -- was for, or how it was going.
+  do
+    local foes, detach = {}, {}
+    local host, ally, objective
+    for _, u in ipairs(wm.units or {}) do
+      if u.id == "A" then host = u
+      elseif u.id == "*" then objective = u
+      elseif u.kind == "ally" then ally = u
+      elseif u.kind == "detach" then detach[#detach + 1] = u
+      elseif u.kind == "foe" or (u.id and u.id ~= "" and u.id:sub(1, 1) ~= "P") then
+        foes[#foes + 1] = u
+      end
+    end
+    -- Numeric order, not string order: sorting the ids as text put 10 and 13
+    -- between 1 and 2. The glyph follows the MUD's own rule (campaign.h:1673)
+    -- -- 1-9 stay digits, 10+ become a, b, c... -- so the legend and the map
+    -- agree, and a two-digit id can never be squeezed into a one-char cell.
+    table.sort(foes, function(a, b)
+      return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
+    end)
+
+    local goal
+    if wm.mode == "offense" then
+      goal = "storm " .. (wm.town or "?") .. " to take it"
+    else
+      goal = "throw the invader back from " .. (wm.town or "?")
+    end
+    add(pagelib.trunc(string.format(
+      "%sObjective:%s break all %s%d%s enemy %s, then %s.",
+      C.bright_cyan, pagelib.RESET, C.yellow, #foes, pagelib.RESET,
+      (#foes == 1) and "army" or "armies", goal), width))
+    add(pagelib.trunc(string.format("%sBattles won this campaign:%s %s%d%s",
+      C.dim, pagelib.RESET, C.bright_green, wm.battles_won or 0, pagelib.RESET), width))
+
+    if host then
+      local objtxt = objective and ("   " .. C.yellow .. "*" .. pagelib.RESET
+        .. C.dim .. " objective" .. pagelib.RESET) or ""
+      add(pagelib.trunc(string.format("%sA%s %sYour host%s %s(%d)%s%s",
+        C.bright_green, pagelib.RESET, C.bright_green, pagelib.RESET,
+        C.yellow, host.size or 0, pagelib.RESET, objtxt), width))
+    end
+    for _, d in ipairs(detach) do
+      add(pagelib.trunc(string.format("%s%s%s %sYour detachment%s %s(%d)%s",
+        C.green, tostring(d.id), pagelib.RESET, C.green, pagelib.RESET,
+        C.yellow, d.size or 0, pagelib.RESET), width))
+    end
+    if ally then
+      add(pagelib.trunc(string.format("%s%s%s %sAlly%s %s(%d)%s",
+        C.bright_cyan, tostring(ally.id), pagelib.RESET,
+        C.bright_cyan, pagelib.RESET,
+        C.yellow, ally.size or 0, pagelib.RESET), width))
+    end
+    -- Sizes line up in their own column so the roster can be read down rather
+    -- than picked out of each sentence; the widest name sets the gutter.
+    local name_w = 0
+    for _, f in ipairs(foes) do
+      local n = #cc.pcase((f.name and f.name ~= "") and f.name or "enemy army")
+      if n > name_w then name_w = n end
+    end
+    if name_w > width - 14 then name_w = width - 14 end
+    if name_w < 1 then name_w = 1 end
+
+    for _, f in ipairs(foes) do
+      local extra = ""
+      if (f.shaken or 0) > 0 then
+        extra = extra .. string.format(" %s[shaken x%d]%s", C.yellow, f.shaken, pagelib.RESET)
+      end
+      if objective and f.c == objective.c and f.r == objective.r then
+        extra = extra .. string.format(" %s[objective]%s", C.bright_cyan, pagelib.RESET)
+      end
+      local nm = cc.pcase((f.name and f.name ~= "") and f.name or "enemy army")
+      -- A holding ("the old fort at...", "the village of...") is a different
+      -- kind of problem from a field army -- it sits still and has to be
+      -- stormed -- so it reads in a different colour.
+      local is_place = nm:sub(1, 4) == "the "
+      add(pagelib.trunc(string.format("%s%s%s %s%s%s %s(%d)%s%s",
+        C.bright_red, foe_glyph(f.id), pagelib.RESET,
+        is_place and C.dim or C.white,
+        nm .. string.rep(" ", math.max(0, name_w - #nm)), pagelib.RESET,
+        C.yellow, f.size or 0, pagelib.RESET, extra), width))
+    end
+  end
 
   local hint
   if wm.pending and wm.pending ~= 0 then
@@ -164,15 +286,27 @@ local function campaign_map_lines(add, width, wm)
 
   local up = wm.upkeep
   if up and (up.food or 0) > 0 then
-    add(pagelib.trunc(string.format("%sUpkeep/tile: %d food  %d mead  %d tools  %d iron  %dd%s",
-      C.red, up.food, up.mead or 0, up.tools or 0, up.iron or 0, up.daler or 0, pagelib.RESET), width))
+    -- Each good in its own colour, the same cc.good_color() the goods and
+    -- city pages use, so a commodity reads the same everywhere in the plugin.
+    -- Daler is yellow, as it is on every other page.
+    local function _good(n, g)
+      return string.format("%s%d %s%s", cc.good_color(g), n or 0, g, pagelib.RESET)
+    end
+    add(pagelib.trunc(string.format("%sUpkeep/tile:%s %s  %s  %s  %s  %s%dd%s",
+      C.dim, pagelib.RESET,
+      _good(up.food, "food"), _good(up.mead, "mead"),
+      _good(up.tools, "tools"), _good(up.iron, "iron"),
+      C.yellow, up.daler or 0, pagelib.RESET), width))
   end
 
   local sp = wm.spoils
   if sp and ((sp.daler or 0) > 0 or (sp.deeds or 0) > 0) then
-    add(pagelib.trunc(string.format("%sSpoils if you win: %d daler, %d renown  (%d deed%s)%s",
-      C.green, sp.daler or 0, sp.renown or 0, sp.deeds or 0, (sp.deeds == 1) and "" or "s",
-      pagelib.RESET), width))
+    add(pagelib.trunc(string.format(
+      "%sSpoils if you win:%s %s%d daler%s, %s%d renown%s  %s(%d deed%s)%s",
+      C.dim, pagelib.RESET,
+      C.yellow, sp.daler or 0, pagelib.RESET,
+      C.bright_cyan, sp.renown or 0, pagelib.RESET,
+      C.green, sp.deeds or 0, (sp.deeds == 1) and "" or "s", pagelib.RESET), width))
   end
 end
 
@@ -327,7 +461,8 @@ local function battle_lines(add, width)
     add(pagelib.header(width, string.format("Battle vs %s  --  turn %d", b.target or "?", b.turn or 0)))
   end
 
-  add(pagelib.trunc(GRID_PLACEHOLDER, width))
+  grid_or_hint(add, width, "popups.war_battle",
+               "Battle map too wide for this pane -- '/vik war'")
 
   add(pagelib.trunc(string.format("%sCommand %d/%d%s   %sFraegd %d%s",
     C.yellow, b.spent or 0, b.budget or 0, pagelib.RESET,

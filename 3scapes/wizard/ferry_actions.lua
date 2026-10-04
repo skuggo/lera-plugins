@@ -108,6 +108,57 @@ local function launch(op, selection)
   report(op .. " " .. selection.path .. ": started")
 end
 
+-- Build a selection the way M.open does, from a Files.List entry plus the
+-- directory it was listed in. Exposed so the pane's own menus can drive a job
+-- without going through the menu M.open puts up: one right-click menu offering
+-- everything that can be done to what was clicked, rather than two.
+function M.selection(entry)
+  local name = entry and entry.name
+  if type(name) ~= "string" or name == "" or name == "." or name == ".."
+      or name:find("[/\\%c]") then return nil end
+  local parent = protocol.cwd()
+  if not parent then return nil end
+  -- A Files.List entry is a literal name, so prefix its parent before using
+  -- the resolver: a leading '~' here must not expand to the wizard's home.
+  local path = protocol.resolve(parent .. "/" .. name, parent, protocol.home())
+  if not path or path:sub(1, 1) ~= "/" then return nil end
+  local selection = {parent = parent, name = name, path = path, is_dir = entry.is_dir}
+  if not valid_selection(selection) then return nil end
+  return selection
+end
+
+-- Start one job. The caller is expected to have asked first for pull and push
+-- -- M.open does that with its own confirmation, the pane's menu with its own.
+-- `what` is either a listing entry or a selection M.selection() already
+-- resolved. Menus resolve at OPEN time and hand the selection back here, so a
+-- confirmation still acts on the file that was clicked even if the pane has
+-- since been walked somewhere else -- and still refuses if that file has
+-- meanwhile left the listing.
+function M.start(op, what)
+  if op ~= "pull" and op ~= "push" and op ~= "cc" then return false end
+  local selection = what and what.path and what or M.selection(what)
+  if not selection or not valid_selection(selection) then return false end
+  launch(op, selection)
+  return true
+end
+
+-- "pull /players/x", or nil when nothing is running. For anything that wants
+-- to show the job rather than only report it.
+function M.describe()
+  if not M.running() then return nil end
+  return job.op .. " " .. job.path
+end
+
+-- Stop the running job without putting a menu up first.
+function M.cancel()
+  local id = M.running()
+  if not id then return false end
+  local ok, err = job.api.cancel(id)
+  if ok then report("cancellation requested")
+  else report("cancel failed: " .. tostring(err)) end
+  return ok and true or false
+end
+
 function M.open(entry)
   if not active or not M.available() or ferry.running() then return false end
   local name = entry and entry.name

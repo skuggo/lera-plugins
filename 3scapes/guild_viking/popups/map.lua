@@ -182,6 +182,7 @@
 -- the exports are additive.
 local pagelib = require("pagelib")
 local maplib = require("maplib")
+local details = require("popups.hover_details")
 local state = require("state")
 local page_opts = require("page_opts")
 local pathfinding = require("pathfinding")
@@ -521,6 +522,7 @@ end
 -- Public renderer contract (popups.lua)
 -- ---------------------------------------------------------------------------
 
+local cell_tip
 function M.lines(width)
   local out = pre_grid_lines(width)
 
@@ -555,7 +557,8 @@ function M.lines(width)
     out[#out + 1] = l
   end
 
-  out[#out + 1] = hover ~= "" and pagelib.trunc(hover, width) or ""
+  details.append_grid(out, hover, width, S.vmap_w or 0, S.vmap_h or 0,
+    function(c, r) return cell_tip(poi_at, c, r) end)
 
   if page_opts.get("show_map_towns") then
     for _, l in ipairs(town_lines(width)) do out[#out + 1] = l end
@@ -587,11 +590,9 @@ end
 -- or a non-left button) is unconsumed, exactly as before.
 -- ---------------------------------------------------------------------------
 
-local function cell_tip(poi_at, c, r)
+cell_tip = function(poi_at, c, r)
   local tip
-  if is_player_cell(c, r) then
-    tip = VMAP_TIP_SYM.X
-  else
+  do
     local poi = poi_at[r * (S.vmap_w or 0) + c]
     if poi then
       tip = (VMAP_TYPE_LABEL[poi.type] or "Location") .. ": " .. display_name(poi.name or "?")
@@ -603,6 +604,7 @@ local function cell_tip(poi_at, c, r)
       tip = VMAP_TIP_SYM[ch] or VMAP_TIP_TERR[ch] or "Terrain"
     end
   end
+  if is_player_cell(c, r) then tip = tip .. "  -- You are here" end
   return string.format("(%d,%d)  %s", c, r, tip)
 end
 

@@ -14,7 +14,16 @@ local home_dir = nil    -- learned from the first cwd of a connection
 local is_available = false
 local inflight = {}     -- absolute path -> true while a page is outstanding
 local waiters = {}      -- absolute path -> array of callbacks
-local seed_pending = false  -- true while a bodyless "where am I" request is outstanding
+-- Every request sent, oldest first: { seed = true } for a bodyless "where am
+-- I", { path = key } otherwise. The MUD answers Files.List requests in the
+-- order they arrive, so each reply is matched to the request it answers.
+--
+-- This replaced a single seed_pending flag. With two quick cds the flag was
+-- set once for two "where am I" requests: the FIRST reply (the directory you
+-- had already left) consumed it and moved the pane there, and the second --
+-- the directory you were actually in -- found no flag and was ignored. The
+-- pane stayed on the old directory until the next cd.
+local outstanding = {}
 
 -- ---- path arithmetic ------------------------------------------------------
 
@@ -65,16 +74,20 @@ function M.reset()
   is_available = false
   inflight = {}
   waiters = {}
-  seed_pending = false
+  outstanding = {}
 end
 
-function M.set_cwd(path)
+-- learn_home is passed only by the seed response, which is the server telling
+-- us where the wizard is (current_path is "players/<name>" at logon,
+-- secure/pinc/logon.h:1637). It used to be "the first directory seen in a
+-- connection", which meant any line that reached set_cwd could define home --
+-- and a prompt drawing a rule line ("/-----\") reaches it, because that is a
+-- slash followed by non-space characters like any other path.
+function M.set_cwd(path, learn_home)
   local resolved = M.normalize(path)
   if not resolved then return end
   current = resolved
-  -- current_path is "players/<name>" at logon (secure/pinc/logon.h:1637), so
-  -- the first directory seen in a connection is the wizard's home.
-  if not home_dir then home_dir = resolved end
+  if learn_home and not home_dir then home_dir = resolved end
 end
 
 function M.cwd() return current end
@@ -115,13 +128,42 @@ local function send(path, page)
     body.path = path
     body.page = page or 1
   end
+  outstanding[#outstanding + 1] = path and { path = path } or { seed = true }
   return gmcp.send("Files.List", body)
+end
+
+-- Which request does a reply for `path` answer? Returns "seed", "path" or nil
+-- (unsolicited). A seed answers whatever directory it echoes; a targeted
+-- request answers only its own path. Anything queued ahead of the match never
+-- got a reply of its own (a dropped message) and is discarded, so one lost
+-- reply cannot shift every later one onto the wrong request.
+local function take_request(path)
+  for i = 1, #outstanding do
+    local req = outstanding[i]
+    if req.seed or req.path == path then
+      for _ = 1, i do table.remove(outstanding, 1) end
+      return req.seed and "seed" or "path"
+    end
+  end
+  return nil
+end
+
+-- A seed reply is only the answer to "where am I" if no newer seed is still
+-- waiting. When one is, the wizard has cd'd again since this was asked, and
+-- the newer reply is on its way with the directory they are actually in.
+local function newer_seed_queued()
+  for i = 1, #outstanding do
+    if outstanding[i].seed then return true end
+  end
+  return false
+end
+
+local function seed_answered(path)
+  if not newer_seed_queued() then M.set_cwd(path, true) end
 end
 
 function M.request(path, cb)
   local key = path and M.normalize(path) or nil
-
-  if not path then seed_pending = true end
 
   if cb then
     if key then
@@ -171,6 +213,12 @@ function M.on_message(_, data)
     local entry = { dirs = {}, files = {}, complete = true,
                     truncated = false, error = data.error }
     M.store(path, entry)
+    -- A seed that errors still answers "where am I": the echoed path is the
+    -- wizard's own directory, and only the LISTING was refused (the daemon
+    -- gates on an ACL glob, so /players comes back "denied" while the cd
+    -- itself succeeded). Consume the seed anyway and let the pane show the
+    -- reason.
+    if take_request(path) == "seed" then seed_answered(path) end
     fire(path, entry)
     if ui and ui.dirty then ui.dirty() end
     return
@@ -178,11 +226,8 @@ function M.on_message(_, data)
 
   -- The bodyless request is the "where am I" request: its echoed path is the
   -- wizard's own working directory. A Tab-driven request for some other
-  -- directory must never move the cwd, so only a pending seed consumes this.
-  if seed_pending then
-    seed_pending = false
-    M.set_cwd(path)
-  end
+  -- directory must never move the cwd, so only the reply to a seed does.
+  if take_request(path) == "seed" then seed_answered(path) end
 
   local page = tonumber(data.page) or 1
   local pages = tonumber(data.pages) or 1

@@ -97,16 +97,18 @@ check("war_points is set from the frame", S.war_points == 12)
 
 war({ active = 1, phase = "melee", w = 2, h = 1, terrain = { ".." },
       units = {
-        { side = "Y", label = "Hird", size = 20, coord = "A1", morale = 80,
+        { side = "you", label = "Hird", size = 20, coord = "A1", morale = 80,
           type = "hird", leader = "Bjorn", bid = 3, ord = 1, g = "a" },
-        { side = "Y", label = "Aid", size = 10, coord = "B1", morale = 60,
+        { side = "you", label = "Aid", size = 10, coord = "B1", morale = 60,
           type = "foe_hird", leader = "", bid = 0, ord = 2 },
         { side = "F", label = "Raiders", size = 30, coord = "A2", morale = 50,
           type = "foe_levy", bid = 0, ord = 0 },
       },
       reserve = { { label = "Levy", size = 15, uid = 7, cost = 40,
                     leader = "Gunnar" } } })
-check("unit side Y is yours and anything else is the foe",
+-- The server sends "you" for your own side (MIP's single-letter "Y" went
+-- with MIP). Anything else is the foe.
+check("unit side you is yours and anything else is the foe",
       S.battle.units[1].side == "you" and S.battle.units[3].side == "foe")
 check("unit fields", S.battle.units[1].label == "Hird"
       and S.battle.units[1].size == 20 and S.battle.units[1].coord == "A1"
@@ -167,18 +169,24 @@ check("campaign upkeep", wm.upkeep.food == 10 and wm.upkeep.mead == 2
 -- called it renown. Same number.
 check("spoils wpts lands on renown", wm.spoils.daler == 900
       and wm.spoils.renown == 12 and wm.spoils.deeds == 2)
--- Only the three overlay kinds MIP carried are consumed: host becomes "A",
--- objective becomes "*", a foe keeps its numeric id. work/poi/ally are new and
--- popups/war.lua has no cell rendering for them, so they are skipped rather
--- than fed in under ids the renderer would not recognise.
-check("only the three MIP overlay kinds are consumed", #wm.units == 3,
-      #wm.units)
+-- host becomes "A", objective becomes "*", a foe keeps its numeric id, an
+-- ally keeps its own ("F"), and a landmark becomes "P1" once taken or "P*"
+-- while it stands. Only "work" is skipped, having no cell of its own.
+--
+-- Allies and landmarks used to be dropped here too, on the grounds that the
+-- renderer had no cell for them. It does: war_campaign.lua's unit_cell() has
+-- drawn "F" in cyan and any "P.." landmark as a "w" since the port, so the
+-- overlays the server sent were being thrown away in front of a renderer
+-- waiting for them -- the ally never appeared on the map or in the legend.
+check("the drawable overlay kinds are consumed", #wm.units == 4, #wm.units)
 local by_id = {}
 for _, u in ipairs(wm.units) do by_id[u.id] = u end
 check("host becomes A", by_id.A ~= nil and by_id.A.c == 0 and by_id.A.r == 1
       and by_id.A.size == 60 and by_id.A.f == "E")
 check("objective becomes *", by_id["*"] ~= nil and by_id["*"].c == 3
       and by_id["*"].r == 3)
+check("an ally keeps its own id", by_id.F ~= nil and by_id.F.c == 2
+      and by_id.F.r == 1 and by_id.F.size == 10 and by_id.F.kind == "ally")
 check("a foe keeps its numeric id", by_id["3"] ~= nil and by_id["3"].size == 40
       and by_id["3"].f == "S")
 -- Queue labels are 1-based squares; the client converts them to 0-based cells.

@@ -117,7 +117,8 @@ M.COMPOSITE = {
   -- path exists for; the writer still treats every member as optional,
   -- because ordinary frames are deltas and a step sends `pos` alone.
   VMAP      = { "w", "h", "active", "pos", "legend", "legend_edge", "enc",
-                "terrain", "east", "south", "landmarks" },
+                "terrain", "east", "south", "landmarks", "landmark_rev",
+                "landmark_chunk", "landmark_chunks" },
   -- Guild.Livestock. bqueue is a sibling split of one server mapping
   -- (_v_bqueue()'s used/max/slots). lfind was three MIP values '!'-joined.
   BQUEUE = { "bqueue_used", "bqueue_max", "bqueue" },
@@ -264,7 +265,8 @@ local MAP = {
   -- Guild.Map (all composite; see M.COMPOSITE above)
   w = "VMAP", h = "VMAP", active = "VMAP", pos = "VMAP", legend = "VMAP",
   legend_edge = "VMAP", enc = "VMAP", terrain = "VMAP", east = "VMAP",
-  south = "VMAP", landmarks = "VMAP",
+  south = "VMAP", landmarks = "VMAP", landmark_rev = "VMAP",
+  landmark_chunk = "VMAP", landmark_chunks = "VMAP",
 
   -- Guild.Trade
   carts = "CARTS", cart_legs = "CARTS", cart_extra = "CARTS",

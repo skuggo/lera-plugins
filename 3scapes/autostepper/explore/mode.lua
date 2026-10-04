@@ -337,7 +337,17 @@ function M.stop_reason()
 end
 
 function M.next_step()
-  if not active or not map or #pending_dirs > 0 then return nil end
+  -- These nils are not exhaustion, and must not read as it: the caller reports
+  -- whatever stop_reason() says, and a stale "exhausted" here would announce
+  -- an empty map while rooms remain.
+  if not active or not map then
+    stop_reason_val = "inactive"
+    return nil
+  end
+  if #pending_dirs > 0 then
+    stop_reason_val = "in flight"
+    return nil
+  end
 
   -- A pending leave path takes precedence over frontier selection: once
   -- M.leave() has armed one, every next_step() call drains it one direction
@@ -389,6 +399,67 @@ end
 
 function M.desyncs()
   return desync_count
+end
+
+-- A plain-text snapshot of the map for an exhaustion report: the position and
+-- counters, what the room we stand in reports next to what the map holds for
+-- it, and every recorded room with its exits. Each exit is marked by where it
+-- leads -- "*" into a coordinate never recorded (frontier: an exhausted map
+-- should have none), "." into a recorded room -- so a hidden branch shows up
+-- as a real exit the map believes leads somewhere already seen.
+function M.dump_lines()
+  local out = {}
+  local function add(s) out[#out + 1] = s end
+  if not map then add("no map held"); return out end
+  local x, y, z = map:position()
+  add(string.format("position %d,%d,%d  rooms %d  policy %s  desyncs %d  "
+    .. "layer corrections %d  stop reason %s", x, y, z, map:count(), policy,
+    desync_count, layer_corrections, tostring(stop_reason_val)))
+  add("current room name: " .. tostring(last_name))
+  add("current room exits (last frame): " .. table.concat(last_exits, " "))
+  local here = map:room(x, y, z)
+  if here then
+    local rec = {}
+    for _, dir in ipairs(map_mod.DIR_ORDER) do
+      if here.exits[dir] then rec[#rec + 1] = dir end
+    end
+    add("current room exits (map): " .. table.concat(rec, " "))
+  else
+    add("current room exits (map): position not recorded")
+  end
+
+  local per_layer, keys = {}, {}
+  for k, room in pairs(map.rooms) do
+    per_layer[room.z] = (per_layer[room.z] or 0) + 1
+    keys[#keys + 1] = k
+  end
+  local layers = {}
+  for lz, n in pairs(per_layer) do layers[#layers + 1] = lz end
+  table.sort(layers)
+  local parts = {}
+  for _, lz in ipairs(layers) do parts[#parts + 1] = "z" .. lz .. "=" .. per_layer[lz] end
+  add("rooms per layer: " .. table.concat(parts, " "))
+
+  table.sort(keys, function(a, b)
+    local ra, rb = map.rooms[a], map.rooms[b]
+    if ra.z ~= rb.z then return ra.z < rb.z end
+    if ra.y ~= rb.y then return ra.y > rb.y end
+    return ra.x < rb.x
+  end)
+  add("rooms (x,y,z: exit. = into recorded room, exit* = into unrecorded):")
+  for _, k in ipairs(keys) do
+    local room = map.rooms[k]
+    local ex = {}
+    for _, dir in ipairs(map_mod.DIR_ORDER) do
+      if room.exits[dir] then
+        local d = map.delta[dir]
+        local seen = map:visited(room.x + d[1], room.y + d[2], room.z + d[3])
+        ex[#ex + 1] = dir .. (seen and "." or "*")
+      end
+    end
+    add(string.format("  %s: %s", k, table.concat(ex, " ")))
+  end
+  return out
 end
 
 -- Test seam: place the tracked position directly. Production code only ever

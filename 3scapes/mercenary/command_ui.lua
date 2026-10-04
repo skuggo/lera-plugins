@@ -173,7 +173,6 @@ local function show_help()
   head("Mercenary commands")
   line("/merc                         Show mercenary summary")
   line("/merc skills | talents | status")
-  line("/merc omit on|off             Hide/show legacy three-line status output")
   line("/merc auto on|off")
   line("/merc auto ability <name>     none, bandage, mend, sustain, fortify, amplify,")
   line("                               critical, frenzy, rend, combo, aegis, hamstring,")
@@ -198,14 +197,6 @@ local function dispatch(args)
     show_records("Talents", records, meta, { "points", "eff", "min_level" }, "Talents")
   elseif sub == "status" then
     show_status()
-  elseif sub == "omit" then
-    local setting = rest:lower()
-    if setting ~= "on" and setting ~= "off" then
-      warn("Usage: /merc omit on|off")
-      return
-    end
-    api.set_omit_status_lines(setting == "on")
-    line("Merc status output omission " .. setting:upper())
   elseif sub == "auto" then
     local action, value = rest:match("^(%S*)%s*(.-)%s*$")
     action, value = (action or ""):lower(), value or ""
@@ -237,7 +228,7 @@ local function dispatch(args)
       warn("Usage: /merc auto [on|off|ability <name>|stam <0-100>|ap <0-100>|cooldown <seconds>]")
     end
   else
-    warn("Usage: /merc [skills|talents|status|omit on|off|auto ...]")
+    warn("Usage: /merc [skills|talents|status|auto ...]")
   end
 end
 
@@ -246,7 +237,7 @@ function M.install(plugin_api)
   local command = require("command")
   local id, err = command.register({
     name = "/merc",
-    usage = "/merc [skills | talents | status | omit on|off | auto ...]",
+    usage = "/merc [skills | talents | status | auto ...]",
     summary = "Mercenary state from the Merc.* GMCP namespace",
     description = "Shows the active mercenary's vitals, progression and "
       .. "economy. 'skills' lists trained skill points raw and effective, "

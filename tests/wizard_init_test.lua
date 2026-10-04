@@ -55,7 +55,8 @@ package.loaded["command"] = { register = function(spec) registered_command = spe
 
 ui = { dirty = function() end, text = function() end, box = function() end }
 lera = { time = function() return 0 end, dirty = function() end }
-mud = { send = function() end }
+local mud_sent = {}
+mud = { send = function(t) mud_sent[#mud_sent + 1] = t end }
 store = { load = function() end, get = function() return nil end,
           set = function() end, save = function() end }
 plugin = { get = function() return nil end }
@@ -92,8 +93,46 @@ local function cd_line(path)
 end
 
 check("wiring: the cd confirmation trigger is anchored PCRE",
-      #triggers == 1 and triggers[1].pattern == "^(/\\S*)$",
+      triggers[1] and triggers[1].pattern == "^(/\\S*)$",
       triggers[1] and triggers[1].pattern)
+
+-- The pane's uall button asks its own question, so the MUD's second prompt
+-- (input_to for y/n, outside /players) is answered here rather than left
+-- hanging in the input stream. Two triggers, no more: one per thing watched.
+check("wiring: uall's confirmation prompt is watched too",
+      #triggers == 2 and
+      (triggers[2].pattern or ""):find("about to update", 1, true) ~= nil,
+      #triggers .. " / " .. tostring(triggers[2] and triggers[2].pattern))
+
+do
+  local actions = require("actions")
+  local before = #mud_sent
+  -- Unarmed: the prompt belongs to a uall the wizard typed themselves.
+  triggers[2].fn("You are about to update all the files in the directory:")
+  check("uall: an unarmed prompt is left alone", #mud_sent == before,
+        "answering a prompt we did not cause would confirm someone else's uall")
+
+  actions.run("uall", "/d/Pinnacle")
+  check("uall: running arms the answer and sends the command",
+        mud_sent[#mud_sent] == "uall /d/Pinnacle" and actions.pending() == "/d/Pinnacle",
+        tostring(mud_sent[#mud_sent]))
+
+  triggers[2].fn("You are about to update all the files in the directory:")
+  check("uall: the armed prompt is answered once", mud_sent[#mud_sent] == "y",
+        tostring(mud_sent[#mud_sent]))
+  check("uall: and disarmed, so the next prompt is not answered too",
+        actions.pending() == nil)
+
+  local after = #mud_sent
+  triggers[2].fn("You are about to update all the files in the directory:")
+  check("uall: a second prompt goes unanswered", #mud_sent == after)
+
+  -- lall asks nothing, so nothing is armed for it.
+  actions.run("lall", "/d/Pinnacle")
+  check("lall: sends without arming an answer",
+        mud_sent[#mud_sent] == "lall /d/Pinnacle" and actions.pending() == nil,
+        tostring(mud_sent[#mud_sent]))
+end
 
 protocol.reset()
 protocol.set_available(true)
@@ -137,6 +176,53 @@ protocol.reset()
 wizard.on_input("cd")
 cd_line("/players/simon")
 check("cwd: a bare cd arms the flag", protocol.cwd() == "/players/simon")
+
+-- A prompt is free to draw a rule line, and "/--------\\" is a slash followed
+-- by non-space characters: the trigger matches it exactly like a path. It must
+-- neither become the cwd nor spend the pending cd, or every cd issued under
+-- such a prompt lands on the decoration and the pane stops following.
+protocol.reset()
+protocol.set_cwd("/open")
+wizard.on_input("cd /players/adventurer")
+cd_line("/-----------------------------------------------------------------------------\\")
+check("cwd: a prompt rule line is not a path",
+      protocol.cwd() == "/open",
+      "got " .. tostring(protocol.cwd()))
+cd_line("/players/adventurer")
+check("cwd: the real confirmation still lands after the decoration",
+      protocol.cwd() == "/players/adventurer",
+      "got " .. tostring(protocol.cwd()))
+
+-- A prompt sent without a trailing newline is assembled onto the front of the
+-- next line, so the confirmation arrives as "> /players/shaman" and the
+-- anchored trigger never matches. The pane must not be stuck there: the first
+-- line back from a cd asks the server where it is instead.
+protocol.reset()
+protocol.set_available(true)
+protocol.set_cwd("/players/skuggis")
+local before = #sent
+wizard.on_input("cd /players/shaman")
+wizard.on_line("> /players/shaman")
+check("cwd: a prompt-glued confirmation triggers a where-am-I request",
+      #sent == before + 1 and sent[#sent].pkg == "Files.List"
+      and sent[#sent].data and sent[#sent].data.path == nil,
+      tostring(#sent - before))
+wizard.on_line("some other line")
+check("cwd: the request is sent once per cd, not once per line",
+      #sent == before + 1, tostring(#sent - before))
+protocol.on_message("Files.List", { path = "/players/shaman", dirs = {}, files = {},
+                                    page = 1, pages = 1 })
+check("cwd: the server's answer moves the pane",
+      protocol.cwd() == "/players/shaman", tostring(protocol.cwd()))
+
+-- Punctuation-only is the give-away, not the backslash alone.
+protocol.reset()
+protocol.set_cwd("/open")
+wizard.on_input("cd /x")
+cd_line("/===========")
+check("cwd: a punctuation-only line is not a path",
+      protocol.cwd() == "/open",
+      "got " .. tostring(protocol.cwd()))
 
 -- A scripted cd (the pane's click-to-navigate goes through mud.send, which
 -- dispatches on_send, not on_input) must track the cwd exactly as a typed one.

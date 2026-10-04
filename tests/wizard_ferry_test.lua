@@ -57,6 +57,8 @@ package.loaded.wm = {
   end,
 }
 ui = { box = function() end, text = function() end, dirty = function() end,
+       -- The pane draws in colour now, so it reaches for text_ansi.
+       text_ansi = function() end,
        rect = function(x, y, w, h) return {x = x, y = y, w = w, h = h} end }
 local sent = {}
 mud = {send = function(line) sent[#sent + 1] = line end}
@@ -110,30 +112,87 @@ local function click(x, y, extra)
   return pane.on_pointer(event)
 end
 
+-- The pane draws its own menus in-pane (overlay.lua) rather than through
+-- require("menu"), and one right-click offers everything that can be done to
+-- what was clicked -- the MUD's own commands AND Ferry. So these cases drive
+-- the overlay; the job-level cases further down are unchanged, because the
+-- rows still go through ferry_actions and the native API.
+local overlay = require("overlay")
+
+local function rows_with(prefix)
+  local found = {}
+  for _, item in ipairs(overlay.items() or {}) do
+    if tostring(item.value):find("^" .. prefix) then found[#found + 1] = item.value end
+  end
+  return found
+end
+
+local function pick(value)
+  local items = overlay.items() or {}
+  local rect = overlay.layout(28, 24)
+  for i, item in ipairs(items) do
+    if item.value == value then
+      overlay.on_click(rect.x + 1, rect.y + (rect.bordered and 1 or 0) + i - 1, 30, 26)
+      return true
+    end
+  end
+  return false
+end
+
 listing()
 ferry = nil
-check("older Lera has no Ferry menu", click(1, 1) == false and opened == nil)
+click(1, 2)
+check("older Lera offers no Ferry rows", #rows_with("ferry%-") == 0)
 check("unavailable does not load menu", menu_loaded == 0)
+overlay.close()
 ferry = {available = function() return false, "configure a mirror" end}
-check("unconfigured Ferry has no menu", click(1, 1) == false and opened == nil)
+click(1, 2)
+check("unconfigured Ferry offers no rows", #rows_with("ferry%-") == 0)
+overlay.close()
 
 ferry = api
-check("directory right-click is consumed", click(1, 1) == true)
-check("entry menu offers pull push cc", opened and #opened.items == 3
-  and item_value(opened.items[1]) == "pull" and item_value(opened.items[2]) == "push"
-  and item_value(opened.items[3]) == "cc")
+check("directory right-click is consumed", click(1, 2) == true)
+check("entry menu offers pull push cc", #rows_with("ferry%-") == 3)
 check("opening actions launches nothing", #calls == 0 and #sent == 0)
-choose("pull")
-check("pull waits for confirmation", #calls == 0 and opened ~= nil)
-check("confirmation names verb and absolute path", opened
-  and opened.title:find("pull", 1, true)
-  and opened.title:find("/players/simon/archive", 1, true))
-check("confirmation defaults to safe cancel", opened and item_value(opened.items[1]) == "cancel")
-choose("cancel")
+pick("ferry-pull")
+check("pull waits for confirmation", #calls == 0 and overlay.active())
+check("confirmation names the verb and what it will touch",
+  (overlay.items()[2].desc or ""):find("pull", 1, true)
+  and (overlay.items()[2].desc or ""):find("archive", 1, true))
+check("confirmation defaults to safe cancel", overlay.items()[1].value == "no")
+pick("no")
 check("cancelling confirmation launches nothing", #calls == 0)
 
+-- From here the cases are Simon's, unchanged in intent: they drive a menu,
+-- pick a row, and check what reached the native API. Only the two helpers
+-- below are re-pointed at the pane's own overlay, plus the row coordinates
+-- (the pane carries a button row above the listing, so entries start a row
+-- lower) and the handful of assertions that counted rows in HIS menu.
+local function has_row(value)
+  for _, item in ipairs(overlay.items() or {}) do
+    if item.value == value then return true end
+  end
+  return false
+end
+-- ferry_actions.open() still drives require("menu") directly (the pane does
+-- not use it, but the module keeps it for callers that do), so the cleanup
+-- cases below keep the original menu-driven helpers.
+local menu_choose, menu_close = choose, menu.close
+choose = function(value)
+  if has_row("yes") then
+    -- the confirmation box: its rows are yes/no rather than the verb
+    value = (value == "cancel") and "no" or "yes"
+  elseif value == "pull" or value == "push" or value == "cc" then
+    value = "ferry-" .. value
+  elseif value == "cancel" then
+    value = "abort"
+  end
+  return pick(value)
+end
+local function open_menu() return overlay.active() end
+
 -- Two columns, each two rows; file with spaces is column 1, row 2.
-click(14, 2)
+click(14, 3)
 choose("push")
 protocol.set_cwd("/elsewhere")
 choose("push")
@@ -156,10 +215,10 @@ if calls[1] then
 end
 
 listing()
-click(14, 1)
+click(14, 2)
 local before = #calls
 choose("cc")
-check("cc starts immediately for exact file", #calls == before + 1 and opened == nil
+check("cc starts immediately for exact file", #calls == before + 1 and not overlay.active()
   and calls[#calls].op == "cc" and calls[#calls].path == "/players/simon/arena.c")
 if #calls > before then
   messages = {}
@@ -172,7 +231,7 @@ for _, result in ipairs({
   {ok = false, status = -1, output = "", cancelled = true},
   {ok = false, status = -1, output = "", timed_out = true},
 }) do
-  click(1, 1); before = #calls; choose("cc")
+  click(1, 2); before = #calls; choose("cc")
   if #calls > before then
     messages = {}
     complete(result)
@@ -186,21 +245,21 @@ end
 
 messages = {}
 launch_error = "mirror unavailable"
-click(1, 1); before = #calls; choose("cc")
+click(1, 2); before = #calls; choose("cc")
 check("launch errors are visible", #calls == before + 1 and output_has("mirror unavailable"))
 launch_error = nil
-click(1, 1)
-check("launch failure does not leave cancel mode", opened and #opened.items == 3)
-menu.close()
+click(1, 2)
+check("launch failure does not leave cancel mode", overlay.active() and #rows_with("ferry%-") == 3)
+overlay.close()
 
 -- A stale cache must not authorize an action against a vanished entry.
-click(1, 1); choose("push")
+click(1, 2); choose("push")
 protocol.invalidate("/players/simon")
 before = #calls
 choose("push")
 check("invalidated selection cannot start a transfer", #calls == before)
 listing()
-click(1, 1)
+click(1, 2)
 protocol.store("/players/simon", {dirs = {}, files = {}, complete = true})
 before = #calls
 choose("cc")
@@ -208,21 +267,20 @@ check("removed selection cannot compile", #calls == before)
 
 listing()
 running = 999
-click(1, 1)
-check("another caller's running job never offers cancel", not opened
-  or not (#opened.items == 1 and item_value(opened.items[1]) == "cancel"))
-menu.close()
+click(1, 2)
+check("another caller's running job never offers cancel", not has_row("abort"))
+overlay.close()
 running = nil
-click(1, 1); before = #calls; choose("cc")
+click(1, 2); before = #calls; choose("cc")
 if #calls > before then
   local owned_id = calls[#calls].id
-  check("running job allows cancel on blank pane space", click(28, 6) == true and opened
-    and #opened.items == 1 and item_value(opened.items[1]) == "cancel")
-  menu.close()
-  check("running job allows cancel on pane border", click(0, 0) == true and opened ~= nil)
-  menu.close()
-  check("outside pane never opens cancel", click(30, 1) == false and opened == nil
-    and click(1, 1, {inside = false}) == false and opened == nil)
+  check("running job allows cancel on blank pane space", click(28, 6) == true
+    and has_row("abort"))
+  overlay.close()
+  check("running job allows cancel on pane border", click(0, 0) == true and overlay.active())
+  overlay.close()
+  check("outside pane never opens cancel", click(30, 2) == false and not overlay.active()
+    and click(1, 2, {inside = false}) == false and not overlay.active())
   click(28, 6)
   cancel_error = "cancel refused"
   messages = {}
@@ -235,25 +293,26 @@ if #calls > before then
 end
 
 listing()
-for _, point in ipairs({{0, 1}, {1, 0}, {9, 1}, {13, 1}, {1, 5}, {30, 1}}) do
-  menu.close()
+for _, point in ipairs({{0, 2}, {1, 0}, {9, 2}, {13, 2}, {1, 6}, {30, 2}}) do
+  overlay.close()
   check("exact hit rejects border gutter or empty area " .. point[1] .. "," .. point[2],
-    click(point[1], point[2]) == false and opened == nil)
+    click(point[1], point[2]) == false and not overlay.active())
 end
 listing({"arena.c"}, {"archive", "zebra"})
-check("empty column cell is not actionable", click(12, 2) == false and opened == nil)
+check("empty column cell is not actionable", click(12, 3) == false and not overlay.active())
 listing({}, {"archive"}, true)
-check("listing notice is not actionable", click(1, 2) == false and opened == nil)
+-- the notice sits on its own row under the grid
+check("listing notice is not actionable", click(1, 3) == false and not overlay.active())
 listing({"a.c", "b.c", "c.c", "d.c"}, {})
-pane.render({x = 0, y = 0, w = 7, h = 4})
+pane.render({x = 0, y = 0, w = 7, h = 5})
 pane.scroll_to_bottom()
-check("right-click follows scrolled file rows", click(1, 1, {width = 7, height = 4}) == true)
+check("right-click follows scrolled file rows", click(1, 2, {width = 7, height = 5}) == true)
 choose("cc")
 check("scrolled file uses displayed target", calls[#calls] and calls[#calls].path == "/players/simon/c.c")
 if running then complete({ok = true, status = 0, output = ""}) end
 
 listing({"~literal.c"}, {})
-click(1, 1); choose("cc")
+click(1, 2); choose("cc")
 check("a leading tilde in a file name stays literal", calls[#calls]
   and calls[#calls].path == "/players/simon/~literal.c")
 if running then complete({ok = true, status = 0, output = ""}) end
@@ -261,7 +320,7 @@ if running then complete({ok = true, status = 0, output = ""}) end
 -- The shared menu replaces its previous owner through on_cancel. Cleanup must
 -- not close a menu another plugin opened after ours.
 listing()
-click(1, 1)
+click(1, 2)
 local actions_ok, actions = pcall(require, "ferry_actions")
 check("Ferry action module exists", actions_ok)
 if actions_ok then
@@ -269,7 +328,7 @@ if actions_ok then
   local previous = closed
   actions.cleanup()
   check("unload leaves another plugin's menu open", opened and closed == previous)
-  menu.close()
+  menu_close()
   package.loaded.ferry_actions = nil
   actions = require("ferry_actions")
   actions.open({name = "archive", is_dir = true})
@@ -283,7 +342,7 @@ if actions_ok then
   package.loaded.ferry_actions = nil
   actions = require("ferry_actions")
   actions.open({name = "archive", is_dir = true})
-  choose("cc")
+  menu_choose("cc")
   local call = calls[#calls]
   actions.cleanup()
   check("unload cancels its owned running job", cancellations[#cancellations] == call.id)

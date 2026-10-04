@@ -40,7 +40,19 @@ local COLOR_WARN  = "FFC107"   -- amber: a guess, a refusal, something to see
 local COLOR_ERROR = "FF4444"   -- red: the run cannot go on (autotrader's red)
 local COLOR_TRACE = "78909C"   -- slate: /step trace, off by default
 
+-- The last HISTORY_MAX log and trace lines, kept whether or not tracing is on,
+-- so an exhaustion dump can say what led up to it after the fact.
+local HISTORY_MAX = 120
+local history = {}
+
+local function remember(msg)
+  history[#history + 1] = string.format("%9.1f %s",
+    (lera and lera.time and lera.time()) or 0, tostring(msg))
+  if #history > HISTORY_MAX then table.remove(history, 1) end
+end
+
 local function log(msg, color)
+  remember(msg)
   buffer.color_print(nil, COLOR_TAG, "[autostepper] ",
                      nil, color or COLOR_INFO, tostring(msg))
 end
@@ -61,7 +73,7 @@ end
 local tracing = false
 
 local function trace(msg)
-  if not tracing then return end
+  if not tracing then remember("trace: " .. msg); return end
   log("trace: " .. msg, COLOR_TRACE)
 end
 
@@ -469,6 +481,23 @@ end
 -- Room entry lists are marked by the server. Refresh/subscription snapshots
 -- are not arrivals, even when they land while a movement is outstanding.
 local function on_room_contents_frame(info)
+  -- An entry the stepper did not ask for -- wimpy, a mob moving the player,
+  -- a direction typed by hand mid-run or while paused -- moves the player
+  -- without a committed step, so the explore map's dead-reckoned position is
+  -- now wrong. Maze rooms mostly share their neighbours' exits, so the
+  -- contradiction check rarely catches it; instead the offset makes unvisited
+  -- rooms land on recorded coordinates, and the run ends "exhausted" with rooms
+  -- left. The position cannot be recovered in an area without room ids, so the
+  -- map is dropped here and the next start or resume maps afresh.
+  local unasked = info and info.entry and not (enabled and state == "stepping")
+  if unasked and explore and explore.profile and explore.profile() then
+    explore.reset("moved without a step; position unknown")
+    if enabled then
+      log("Moved outside the stepper; stopping", COLOR_WARN)
+      M.stop()
+      return
+    end
+  end
   if not enabled then return end
   if awaiting_refresh then
     if info and info.entry then
@@ -736,6 +765,54 @@ local function is_preparation(cmd)
   return PREPARATION_COMMANDS[tostring(cmd):lower():match("^%s*(%S+)")] == true
 end
 
+-- Exhaustion reports. A plugin has no io and no os.getenv in Lera's sandbox,
+-- so they go through the plugin store, alongside the mob-ignore list: the last
+-- DUMP_KEEP reports, newest last, in the profile's .storage/autostepper.json.
+local DUMP_KEEP = 5
+
+local function write_explore_dump(why)
+  local lines = {}
+  local function add(s) lines[#lines + 1] = s end
+  add(os.date("%Y-%m-%d %H:%M:%S") .. "  " .. tostring(why))
+  local prof = explore and explore.profile and explore.profile()
+  add("area: " .. tostring(prof and prof.name) .. "  run_mode: "
+      .. tostring(run_mode) .. "  state: " .. tostring(state))
+  if ri then
+    add("roominfo room: " .. tostring(ri.room and ri.room()))
+    add("roominfo exits: " .. tostring(ri.exits_string and ri.exits_string()))
+    local mobs = ri.monsters and ri.monsters() or {}
+    add("roominfo monsters: " .. table.concat(copy_names(mobs), ", "))
+  end
+  add("-- map")
+  for _, l in ipairs(explore and explore.dump_lines and explore.dump_lines() or {}) do
+    add(l)
+  end
+  add("-- last " .. #history .. " log/trace lines (seconds since client start)")
+  for _, l in ipairs(history) do add(l) end
+
+  -- A diagnostic must never be what breaks a run: any failure here is logged
+  -- and swallowed.
+  local ok, saved = pcall(function()
+    if not (store and store.get and store.set and store.save) then return false end
+    local data = store.get()
+    if type(data) ~= "table" then data = {} end
+    local dumps = type(data.explore_dumps) == "table" and data.explore_dumps or {}
+    dumps[#dumps + 1] = lines
+    while #dumps > DUMP_KEEP do table.remove(dumps, 1) end
+    data.explore_dumps = dumps
+    return store.set(data) and store.save()
+  end)
+  if ok and saved then
+    local dir = store.path and store.path()
+    log("Map dump saved to " .. (dir and (dir .. "/autostepper.json") or "the plugin store")
+        .. " (explore_dumps, newest last)", COLOR_WARN)
+    return true
+  end
+  log("Could not save the explore dump" .. (ok and "" or (": " .. tostring(saved))),
+      COLOR_WARN)
+  return false
+end
+
 local function do_step(monsters)
   local step
   local notify_step = true
@@ -778,8 +855,16 @@ local function do_step(monsters)
         log("Chaos Sea complete: cask/portal reached", COLOR_RUN)
       elseif reason == "at origin" then
         log("Explored: back at the origin", COLOR_RUN)
+      elseif reason == "in flight" then
+        log("Asked for a step while a move is still unconfirmed; stopping "
+            .. "(the map is NOT exhausted -- please report this)", COLOR_WARN)
+      elseif reason == "inactive" then
+        log("Explore map unavailable; stopping (not exhausted)", COLOR_WARN)
       else
         log("Explored: no unvisited exits remain", COLOR_RUN)
+      end
+      if not at_completion and (reason == "exhausted" or reason == "in flight") then
+        write_explore_dump("explore stopped: " .. reason)
       end
       enabled = false
       state = "idle"
@@ -963,6 +1048,8 @@ local function show_help()
   log("  -!                     - Stop stepping")
   log("  /step status           - Show farm settings, restart/wait state and travel progress")
   log("  /step trace [on|off]   - Log room frames, refreshes and decisions")
+  log("  /step dump             - Save the explore map and recent history (last 5 kept)")
+  log("                           to .storage/autostepper.json; automatic when exploring ends 'exhausted'")
   log("  /step mobignore add|remove <name> | list | clear")
   log("                           Exact full name, case/whitespace normalized; saved per profile")
   log("  /step explore [area]   - Start explore mode in an area (default: chaossea)")
@@ -1147,6 +1234,8 @@ local function dispatch(args)
     else
       log("Usage: /step trace [on|off]", COLOR_WARN)
     end
+  elseif sub == "dump" then
+    write_explore_dump("requested with /step dump")
   elseif sub == "start" then
     M.start(false)
   elseif sub == "targets" then

@@ -301,21 +301,28 @@ check("city.lua renders the City Plan section inline", city_plan_header)
 check("city.lua shows the no-data line when no plan has loaded", city_plan_nodata)
 check("city.lua no longer points at the popup", not stale_pointer)
 
--- war.lua's placeholder only appears once the campaign map has active data
--- (M.lines gates campaign_map_lines on S.war_map.active) -- minimal seed,
--- same shape as guild_viking_window_test.lua's Task-10 seed.
+-- The War tab used to carry a placeholder pointing at the popup ("Battle
+-- map: /vik war"). It draws the campaign board inline now, falling back to
+-- a hint only when the pane is too narrow for the grid -- so the assertion
+-- is that one of the two appears, not that the pointer survives.
+--
+-- Still gated on active data (M.lines gates campaign_map_lines on
+-- S.war_map.active) -- minimal seed, same shape as
+-- guild_viking_window_test.lua's Task-10 seed.
 S.war_map = { active = true, dim = 1, turn = 1, mode = "offense", pending = 0,
               town = "Jorvik", works_budget = 0, march_eta = 0, rows = { "." } }
 local war_lines = window.PAGES[11].mod.lines(80) -- war
 check("window.PAGES[11] is the war page", window.PAGES[11].key == "war")
-local war_placeholder_found = false
+local war_board_found = false
 for _, l in ipairs(war_lines) do
-  if l:find("Battle map: /vik war", 1, true) then war_placeholder_found = true end
+  -- Either the board itself (its header) or the narrow-pane fallback.
+  if l:find("War Campaign:", 1, true)
+     or l:find("too wide for this pane", 1, true) then war_board_found = true end
   if l:find("(stage 3)", 1, true) then
     check("war.lua placeholder no longer says (stage 3)", false, l)
   end
 end
-check("war.lua placeholder text updated", war_placeholder_found)
+check("war.lua draws the campaign board inline", war_board_found)
 
 -- =============================================================================
 -- /vik dispatch: routing to popups.toggle/open_page, "page"/"pop"

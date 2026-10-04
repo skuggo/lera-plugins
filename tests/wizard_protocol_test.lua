@@ -65,13 +65,20 @@ check("available: set true", protocol.available() == true)
 
 protocol.set_cwd("/players/simon")
 check("cwd: set from a cd confirmation", protocol.cwd() == "/players/simon")
-check("home: the first cwd of a connection is home",
-      protocol.home() == "/players/simon",
-      "current_path is players/<name> at logon")
+-- Home is the server's answer to "where am I", not whatever reached set_cwd
+-- first: a cd confirmation is a line off the screen, and a prompt can put a
+-- path-shaped line there.
+check("home: a cd confirmation does not establish home", protocol.home() == nil)
+
+protocol.set_cwd("/players/simon", true)
+check("home: the seed establishes it", protocol.home() == "/players/simon")
 
 protocol.set_cwd("/open")
 check("cwd: a later cd moves the cwd", protocol.cwd() == "/open")
 check("home: a later cd does not move home", protocol.home() == "/players/simon")
+
+protocol.set_cwd("/later", true)
+check("home: a second seed does not move home", protocol.home() == "/players/simon")
 
 -- ---- cache ---------------------------------------------------------------
 
@@ -305,6 +312,26 @@ protocol.on_message("Files.List", {
 check("seed: a bodyless response sets the cwd",
       protocol.cwd() == "/players/simon", tostring(protocol.cwd()))
 check("seed: it also establishes home", protocol.home() == "/players/simon")
+
+-- A seed whose listing is REFUSED still answers "where am I". The daemon
+-- gates listings on an ACL glob (daemon/gmcp_files_d.c), so a cd into a
+-- directory the wizard may enter but not list -- /players -- answers
+-- { path, error }. The pane must follow the cd and show the reason, and the
+-- seed must be consumed so a later response is not mistaken for it.
+protocol.reset()
+sent = {}
+protocol.set_cwd("/players/skuggis", true)
+protocol.request(nil)
+protocol.on_message("Files.List", { path = "/players", error = "denied" })
+check("seed: an errored seed still moves the cwd",
+      protocol.cwd() == "/players", tostring(protocol.cwd()))
+check("seed: the reason is kept for the pane to show",
+      (protocol.lookup("/players") or {}).error == "denied")
+protocol.on_message("Files.List", {
+  path = "/elsewhere", dirs = {}, files = {}, page = 1, pages = 1,
+})
+check("seed: a later response is not mistaken for the consumed seed",
+      protocol.cwd() == "/players", tostring(protocol.cwd()))
 
 -- A Tab-driven request for another directory must NOT move the cwd.
 protocol.reset()

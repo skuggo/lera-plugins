@@ -60,7 +60,9 @@
 -- the grid already gives the exact "A1"-style cell name.
 local pagelib = require("pagelib")
 local maplib = require("maplib")
+local details = require("popups.hover_details")
 local state = require("state")
+local cc = require("pages.city_common")
 local track = require("popups.pointer_track").tracker()
 
 local S = state.S
@@ -118,9 +120,22 @@ local CAMP_NAME = { ["."] = "plain", f = "woods", H = "hills", w = "water" }
 local function unit_cell(u)
   if u.id == "A" then return { glyph = "A", color = C.bright_green } end
   if u.id == "F" then return { glyph = "F", color = C.bright_cyan } end
+  -- Your own detachments (campaign.h's war_map_split): green like the host,
+  -- because they are the host, just not all of it.
+  if u.kind == "detach" then
+    return { glyph = tostring(u.id), color = C.green }
+  end
   if u.id == "*" then return { glyph = "*", color = C.yellow } end
   if type(u.id) == "string" and u.id:sub(1, 1) == "P" then
     return { glyph = "w", color = (u.id == "P1") and C.dim or C.white }
+  end
+  -- Foes 10 and up draw as a, b, c... exactly as the in-game board does
+  -- (campaign.h:1673). Rendering the raw id put a two-character glyph into a
+  -- one-character cell, where it truncated to its first digit -- so foe 10
+  -- appeared on the map as another "1".
+  local n = tonumber(u.id)
+  if n and n > 9 then
+    return { glyph = string.char(87 + n), color = C.bright_red }
   end
   return { glyph = tostring(u.id), color = C.bright_red }
 end
@@ -139,6 +154,16 @@ end
 -- player's own host position when the selected id isn't found -- but the
 -- fallback only matters visually because the highlight draw itself is
 -- gated on `selected` being truthy, exactly like LEGACY's `DrawRect` gate.
+-- Axis labels, matching the in-game board exactly: letters across the top
+-- (A, B, C...) and 1-based row numbers down the side, which is also how
+-- 'vcampaign' names a square ("C4"). The grid was rendered without them, so the
+-- pane showed a field of glyphs with no way to read a coordinate off it.
+local function col_letter(c) return string.char(65 + c) end
+local function row_number(r) return tostring(r + 1) end
+
+local GRID_OPTS = { col_headers = true, row_headers = true,
+                    col_label = col_letter, row_label = row_number }
+
 local function make_grid(wm)
   local dim = wm.dim or #(wm.rows or {})
   local rows = wm.rows or {}
@@ -247,28 +272,53 @@ local function pre_grid_lines(width)
   return out, true
 end
 
+-- The board alone, with none of this popup's framing. pages/war.lua renders
+-- it inline rather than telling the reader to open a popup to see their own
+-- battle; sharing make_grid() keeps the two views from drifting, which is the
+-- whole reason this is exported instead of copied.
+--
+-- Returns the lines and their rendered width, so a caller can decline to draw
+-- a board wider than its pane instead of overflowing it.
+function M.grid_lines()
+  local wm = S.war_map
+  if not wm or #(wm.rows or {}) < 1 then return nil, 0 end
+  local grid = make_grid(wm)
+  return maplib.render(grid, GRID_OPTS), maplib.geometry(grid, GRID_OPTS).width
+end
+
+local hover_text
 function M.lines(width)
   local out, has_grid = pre_grid_lines(width)
   if not has_grid then return out end
 
   local wm = S.war_map
-  for _, l in ipairs(maplib.render(make_grid(wm), {})) do out[#out + 1] = l end
-  out[#out + 1] = hover ~= "" and pagelib.trunc(hover, width) or ""
+  for _, l in ipairs(maplib.render(make_grid(wm), GRID_OPTS)) do out[#out + 1] = l end
+  details.append_grid(out, hover, width, wm.dim or #(wm.rows or {}), wm.dim or #(wm.rows or {}),
+    function(c, r) return hover_text(wm, c, r) end)
   out[#out + 1] = pagelib.trunc(C.yellow .. hint_text(wm) .. RESET, width)
 
   local up = wm.upkeep
   if up and (up.food or 0) > 0 then
-    out[#out + 1] = pagelib.trunc(string.format(
-      "%sUpkeep/tile: %d food  %d mead  %d tools  %d iron  %dd%s",
-      C.red, up.food, up.mead or 0, up.tools or 0, up.iron or 0, up.daler or 0, RESET), width)
+    -- Same colouring as pages/war.lua's copy of this line: each good in the
+    -- shared cc.good_color(), daler in yellow.
+    local function _good(n, g)
+      return string.format("%s%d %s%s", cc.good_color(g), n or 0, g, RESET)
+    end
+    out[#out + 1] = pagelib.trunc(string.format("%sUpkeep/tile:%s %s  %s  %s  %s  %s%dd%s",
+      C.dim, RESET,
+      _good(up.food, "food"), _good(up.mead, "mead"),
+      _good(up.tools, "tools"), _good(up.iron, "iron"),
+      C.yellow, up.daler or 0, RESET), width)
   end
 
   local sp = wm.spoils
   if sp and ((sp.daler or 0) > 0 or (sp.deeds or 0) > 0) then
     out[#out + 1] = pagelib.trunc(string.format(
-      "%sSpoils if you win: %d daler, %d renown  (%d deed%s)%s",
-      C.green, sp.daler or 0, sp.renown or 0, sp.deeds or 0,
-      (sp.deeds == 1) and "" or "s", RESET), width)
+      "%sSpoils if you win:%s %s%d daler%s, %s%d renown%s  %s(%d deed%s)%s",
+      C.dim, RESET,
+      C.yellow, sp.daler or 0, RESET,
+      C.bright_cyan, sp.renown or 0, RESET,
+      C.green, sp.deeds or 0, (sp.deeds == 1) and "" or "s", RESET), width)
   end
 
   local qline = queue_status_line(wm)
@@ -282,7 +332,7 @@ end
 function M.geometry(width)
   local _, has_grid = pre_grid_lines(width)
   if not has_grid then return nil end
-  return maplib.geometry(make_grid(S.war_map), {})
+  return maplib.geometry(make_grid(S.war_map), GRID_OPTS)
 end
 
 function M.grid_line_offset(width)
@@ -293,7 +343,7 @@ end
 -- viking_chart_tooltip-style flattened hover text, mirroring LEGACY's own
 -- bcamp_* tooltip construction (13901-13935) one-for-one, "\r\n" collapsed
 -- to "  " like every other module's hover line.
-local function hover_text(wm, c, r)
+hover_text = function(wm, c, r)
   local row = (wm.rows or {})[r + 1] or ""
   local terr_ch = row:sub(c + 1, c + 1)
   if terr_ch == "" then terr_ch = "." end
@@ -310,11 +360,16 @@ local function hover_text(wm, c, r)
   if dugout then tip = tip .. "  dugout" end
 
   if u then
+    if u.name and u.name ~= "" then tip = tip .. "  Name: " .. u.name end
+    if u.size ~= nil then tip = tip .. "  " .. tostring(u.size) .. " men" end
+    if u.owner and u.owner ~= "" then tip = tip .. "  Owner: " .. u.owner end
     if u.f and u.f ~= "" then tip = tip .. "  facing " .. u.f end
     if u.id == "A" then
       tip = tip .. "  host (you)"
-    elseif u.id == "F" then
+    elseif u.id == "F" or u.kind == "ally" then
       tip = tip .. "  ally"
+    elseif u.kind == "detach" then
+      tip = tip .. "  detachment (yours)"
     elseif u.id == "*" then
       tip = tip .. "  objective"
     elseif type(u.id) == "string" and u.id:sub(1, 1) == "P" then

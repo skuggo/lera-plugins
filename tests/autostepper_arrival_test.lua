@@ -1231,5 +1231,71 @@ do
     status_text(e):find("Chaos Sea farm: off", 1, true) and e.as.is_running())
 end
 
+-- An entry the stepper did not send for (wimpy, a mob moving the player, a
+-- direction typed by hand) leaves the dead-reckoned position wrong. Maze rooms
+-- mostly share their neighbours' exits, so nothing contradicts it; the offset
+-- then files unvisited rooms under recorded coordinates and the run ends
+-- "exhausted" with rooms left. The map has to go.
+do
+  local e = engine()
+  e.begin({n = 0, e = 0}, {"A growing mutant being"})
+  check("unasked move setup: fighting in a one-room map",
+    e.as.get_state() == "fighting" and e.mode.stats().rooms == 1)
+  e.info({n = 0, e = 0}); e.contents({}, nil, true)   -- fled into a look-alike room
+  check("an entry during combat stops the run",
+    not e.as.is_running() and #e.pushes == 0)
+  check("an entry during combat drops the reckoned map", e.mode.stats().rooms == 0)
+  e.command("explore"); e.info({n = 0, e = 0}); e.contents({})
+  check("resuming after an unasked move maps afresh from where the player stands",
+    e.as.is_running() and e.mode.stats().rooms == 1 and e.pos() == "0,0,0")
+end
+
+do
+  local e = engine()
+  e.begin({n = 0, e = 0}, {})
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  e.as.stop()
+  local rooms = e.mode.stats().rooms
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)   -- walked by hand while paused
+  check("a move while paused drops the retained map",
+    rooms == 2 and e.mode.stats().rooms == 0 and not e.as.is_running())
+end
+
+-- Exhaustion saves a report in the plugin store: the map with frontier marks,
+-- the room as the server last described it, and the history leading up to it
+-- -- trace lines included, though trace is off. Plugins get no io in Lera's
+-- sandbox, so the store is the only place it can go.
+do
+  local old_store = store
+  local saved = { ignored_monsters = { ["a kept mob"] = true } }
+  store = {
+    load = function() return true end,
+    get = function() return saved end,
+    set = function(d) saved = d; return true end,
+    save = function() return true end,
+    path = function() return "/profile/.storage" end,
+  }
+  local e = engine()
+  e.begin({n = 0}, {})
+  e.info({s = 0}); e.contents({}, nil, true)
+  local dumps = saved.explore_dumps or {}
+  local text = table.concat(dumps[#dumps] or {}, "\n")
+  check("exhaustion saves a dump",
+    not e.as.is_running() and #dumps == 1 and text:find("explore stopped: exhausted", 1, true) ~= nil)
+  check("the dump lists every recorded room with its exits marked",
+    text:find("0,0,0: n.", 1, true) ~= nil and text:find("0,1,0: s.", 1, true) ~= nil
+      and text:find("rooms per layer: z0=2", 1, true) ~= nil)
+  check("the dump carries the history, trace lines included with trace off",
+    text:find("Explored: no unvisited exits remain", 1, true) ~= nil
+      and text:find("trace: ", 1, true) ~= nil)
+  check("saving a dump keeps the mob-ignore list",
+    saved.ignored_monsters and saved.ignored_monsters["a kept mob"] == true)
+  for _ = 1, 6 do e.command("dump") end
+  check("/step dump adds reports and only the last five are kept",
+    #saved.explore_dumps == 5
+      and saved.explore_dumps[5][1]:find("requested with /step dump", 1, true) ~= nil)
+  store = old_store
+end
+
 print(string.format("%d checks, %d failures", checks, failures))
 if failures > 0 then os.exit(1) end
