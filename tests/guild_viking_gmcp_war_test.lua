@@ -97,18 +97,20 @@ check("war_points is set from the frame", S.war_points == 12)
 
 war({ active = 1, phase = "melee", w = 2, h = 1, terrain = { ".." },
       units = {
+        -- The wire word is "you", not MIP's "Y": battle.h builds every company
+        -- with "side":"you" and compares on that string (players/viking/
+        -- obj/include/battle.h:885). Reading "Y" classified every company of
+        -- yours as the foe's.
         { side = "you", label = "Hird", size = 20, coord = "A1", morale = 80,
           type = "hird", leader = "Bjorn", bid = 3, ord = 1, g = "a" },
         { side = "you", label = "Aid", size = 10, coord = "B1", morale = 60,
           type = "foe_hird", leader = "", bid = 0, ord = 2 },
-        { side = "F", label = "Raiders", size = 30, coord = "A2", morale = 50,
+        { side = "foe", label = "Raiders", size = 30, coord = "A2", morale = 50,
           type = "foe_levy", bid = 0, ord = 0 },
       },
       reserve = { { label = "Levy", size = 15, uid = 7, cost = 40,
                     leader = "Gunnar" } } })
--- The server sends "you" for your own side (MIP's single-letter "Y" went
--- with MIP). Anything else is the foe.
-check("unit side you is yours and anything else is the foe",
+check("unit side 'you' is yours and anything else is the foe",
       S.battle.units[1].side == "you" and S.battle.units[3].side == "foe")
 check("unit fields", S.battle.units[1].label == "Hird"
       and S.battle.units[1].size == 20 and S.battle.units[1].coord == "A1"
@@ -169,16 +171,20 @@ check("campaign upkeep", wm.upkeep.food == 10 and wm.upkeep.mead == 2
 -- called it renown. Same number.
 check("spoils wpts lands on renown", wm.spoils.daler == 900
       and wm.spoils.renown == 12 and wm.spoils.deeds == 2)
--- host becomes "A", objective becomes "*", a foe keeps its numeric id, an
--- ally keeps its own ("F"), and a landmark becomes "P1" once taken or "P*"
--- while it stands. Only "work" is skipped, having no cell of its own.
---
--- Allies and landmarks used to be dropped here too, on the grounds that the
--- renderer had no cell for them. It does: war_campaign.lua's unit_cell() has
--- drawn "F" in cyan and any "P.." landmark as a "w" since the port, so the
--- overlays the server sent were being thrown away in front of a renderer
--- waiting for them -- the ally never appeared on the map or in the legend.
-check("the drawable overlay kinds are consumed", #wm.units == 4, #wm.units)
+local function by_id_of(w)
+  local m = {}
+  for _, u in ipairs(w.units) do m[u.id] = u end
+  return m
+end
+-- host becomes "A", objective becomes "*", and foe/ally/detach keep their own
+-- server id. A "poi" becomes "P1" once taken and "P*" while it stands -- the
+-- pair popups/war_campaign.lua's unit_cell() distinguishes. Only "work" is
+-- dropped: nothing draws a cell for it, so there is no id to give it.
+check("every overlay with a cell is consumed; only work is dropped",
+      #wm.units == 4, #wm.units)
+check("the ally keeps its own id and is not dropped",
+      by_id_of(wm).F ~= nil and by_id_of(wm).F.kind == "ally"
+      and by_id_of(wm).F.c == 2 and by_id_of(wm).F.r == 1)
 local by_id = {}
 for _, u in ipairs(wm.units) do by_id[u.id] = u end
 check("host becomes A", by_id.A ~= nil and by_id.A.c == 0 and by_id.A.r == 1
@@ -220,6 +226,39 @@ check("captives and the siege park survive it",
 -- ---- envelope --------------------------------------------------------------
 protocol.on_gmcp("Guild.War", { guild = "berserker", active = 1, phase = "foreign" })
 check("a foreign guild's battle frame is dropped", S.battle == nil)
+
+-- ---- campaign deltas, on Guild.Info ----------------------------------------
+-- The server moved the campaign_* keys from Guild.Kingdom to Guild.Info (the
+-- Kingdom package ran out of pages), and the client routes them by key name,
+-- so they must land from either package. Frames are DELTAS: when the armies
+-- move but the header does not change, the frame carries campaign_units with
+-- no `campaign` record. That used to be thrown away whole.
+local function info(payload)
+  payload.guild = "viking"
+  protocol.on_gmcp("Guild.Info", payload)
+end
+info({
+  campaign = { active = 1, dim = 3, turn = 7, mode = "march", pending = 0,
+               town = "Utrecht" },
+  campaign_terrain = { "...", "...", "..." },
+  campaign_units = { { kind = "host", id = "A", c = 0, r = 0, size = 60 } },
+})
+check("the campaign lands from Guild.Info",
+      S.war_map ~= nil and S.war_map.town == "Utrecht" and #S.war_map.units == 1)
+info({
+  campaign_units = {
+    { kind = "foe", id = "1", c = 2, r = 1, size = 25, name = "Utrecht Hird" },
+    { kind = "host", id = "A", c = 1, r = 0, size = 60 },
+  },
+})
+local moved = {}
+for _, u in ipairs(S.war_map and S.war_map.units or {}) do moved[u.id] = u end
+check("a units-only delta updates the board",
+      moved["1"] ~= nil and moved["1"].c == 2 and moved.A ~= nil and moved.A.c == 1,
+      S.war_map and #S.war_map.units)
+check("a units-only delta keeps the header and terrain",
+      S.war_map ~= nil and S.war_map.turn == 7 and S.war_map.town == "Utrecht"
+      and #S.war_map.rows == 3)
 
 if failures > 0 then
   print("FAILURES: " .. failures)

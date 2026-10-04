@@ -348,6 +348,8 @@ local sc = wm.make_scroller({
 -- add_message above them; predeclare so those calls bind these locals, not
 -- accidental globals.
 local wrapped_reset, wrapped_append, wrapped_ensure, wrapped_trim_front
+local record_message, record_history
+local recording_source
 
 --------------------------------------------------------------------------------
 -- Internal helpers
@@ -728,6 +730,8 @@ local function add_message(msg_type, sender, text, opts)
     sc.on_append(rows)
   end
 
+  if recording_source then record_message(messages[#messages]) end
+
   -- Trim buffer if too large
   while #messages > config.max_lines do
     local dead = table.remove(messages, 1)
@@ -918,6 +922,30 @@ local function logical_message(msg)
     { len = #lead - #stamp, code = color_code },
     { len = #msg.text, code = body_code },
   }, #url_links.cells(lead)
+end
+
+-- Shared unwrapped, painted bytes for the companion and recording archive.
+local function logical_text(msg)
+  local _, plain, spans = logical_message(msg)
+  return paint_spans({plain}, {#plain}, spans, plain)[1]
+end
+
+record_message = function(msg)
+  if not recording_source or not recording.source_active() then return false end
+  local id = msg.seq
+  -- Lua numbers stop representing every integer beyond this bound. Fail only
+  -- capture before formatting; the existing live history remains untouched.
+  if type(id) ~= "number" or id < 1 or id > 9007199254740991 or id % 1 ~= 0 then
+    return recording.source_upsert(recording_source, "", "")
+  end
+  return recording.source_upsert(recording_source, string.format("%.0f", id), logical_text(msg))
+end
+
+record_history = function()
+  if not recording_source then return end
+  for i = 1, #messages do
+    if not record_message(messages[i]) then break end
+  end
 end
 
 local function wrap_msg(msg, width)
@@ -1150,6 +1178,7 @@ local function invalidate_wrapped_formatting()
   companion_epoch = companion_epoch + 1
   selection_generation = selection_generation + 1
   wrapped.width = nil
+  record_history()
 end
 
 function M.on_message(callback)
@@ -1323,6 +1352,7 @@ function M.clear()
   messages = {}
   wrapped_reset()
   sc.scroll_to_bottom()
+  if recording_source then recording.source_reset(recording_source) end
 end
 
 -- Get message count
@@ -1437,8 +1467,7 @@ function companion_provider.page(req)
   for i = first, last do
     local msg = messages[i]
     if msg then
-      local _, plain, spans = logical_message(msg)
-      records[#records+1] = {id=companion_id(msg),text=paint_spans({plain},{#plain},spans,plain)[1]}
+      records[#records+1] = {id=companion_id(msg),text=logical_text(msg)}
     end
   end
   return {epoch=epoch,records=records,oldest=companion_id(messages[1]),latest=companion_id(messages[#messages]),
@@ -1944,6 +1973,15 @@ function M.on_load()
   end
 
 
+  -- Optional on older Lera. Inactive sessions do no capture-only traversal or
+  -- formatting; each row checks again in case capture stops or fails midway.
+  if recording and recording.source_active and recording.source_register
+      and recording.source_upsert and recording.source_reset and recording.source_retire
+      and recording.source_active() then
+    recording_source = recording.source_register("chat", "Chat")
+    record_history()
+  end
+
   -- Register MIP handlers
   table.insert(mip_handlers, mip.on("BAB", handle_tell))
   table.insert(mip_handlers, mip.on("BAG", handle_emote))
@@ -2021,6 +2059,10 @@ function M.on_unload()
     message_seq = message_seq,
   })
   store.save()
+  if recording_source then
+    recording.source_retire(recording_source)
+    recording_source = nil
+  end
 end
 
 return M

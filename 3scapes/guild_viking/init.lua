@@ -49,11 +49,8 @@ register_handlers(city)
 local livestock = require("handlers.livestock")
 register_handlers(livestock)
 
--- Guild.State's vitals block. Registered like any other handler module, but
--- note the ordering constraint it does NOT have: the hp-bar triggers below are
--- registered later and stand down at runtime via S.vitals_gmcp, not by being
--- skipped here -- they are also what gags the prompt lines out of the main
--- buffer, so they must be registered either way.
+-- Guild.State's vitals block -- the only source of the status values (the
+-- hp-bar screen-scrape triggers are gone; 'autohp' hides the lines MUD-wide).
 local vitals = require("handlers.vitals")
 register_handlers(vitals)
 
@@ -69,10 +66,9 @@ local stats_page = require("pages.stats")
 -- file's header comment for the renderer-module contract.
 local popups = require("popups")
 
--- Task 8: combat composite + hp-bar triggers. The FFF MIP composite this used
--- to read is gone; Char.Combat carries the attacker block now (subscribed in
--- on_load), and the hp-bar text triggers stay registered either way because
--- they are also what gags the prompt lines out of the main buffer.
+-- Task 8: combat. The FFF MIP composite and the hp-bar text triggers are gone;
+-- Char.Combat carries the attacker block (subscribed in on_load) and
+-- Guild.State the rest.
 local combat = require("combat")
 
 -- Task 9: push notifications + the per-second countdown timer. `pushn` is
@@ -128,7 +124,6 @@ function M.state()
 end
 
 local gmcp_id, combat_gmcp_id, countdown_id
-local combat_trigger_ids = {}
 local notify_trigger_ids = {}
 local vik_command_id, resetvikxp_id, kill_listener_id
 
@@ -142,46 +137,6 @@ local function do_resetxp()
   S.xp_session_start = nil
   buffer.color_print(nil, "DAA520", "Viking XP session counter reset.")
   ui.dirty()
-end
-
--- Hp-bar gagging (stage-1 ruling, landed here per Task 3): the 8 combat/
--- hp-bar triggers (combat.triggers) go into the main output buffer raw
--- unless gagged -- LEGACY never printed them there either (they only ever
--- fed its detached window), and now that the Stats page (pages/stats.lua)
--- shows the same data in the pane, gagging keeps lera's main output as quiet
--- as LEGACY's was. `page_opts.get("gag_status_lines")` is read fresh each
--- time this registers, so a later re-registration (below) picks up a
--- changed setting without a reconnect/reload.
-local function combat_trigger_opts()
-  if page_opts.get("gag_status_lines") then
-    return { omit_from_output = true }
-  end
-  return nil
-end
-
-local function register_combat_triggers()
-  local opts = combat_trigger_opts()
-  for _, t in ipairs(combat.triggers) do
-    combat_trigger_ids[#combat_trigger_ids + 1] = trigger.add(t.pattern, t.fn, opts)
-  end
-end
-
-local function unregister_combat_triggers()
-  for _, tid in ipairs(combat_trigger_ids) do
-    trigger.remove(tid)
-  end
-  combat_trigger_ids = {}
-end
-
--- `/vik set gag_status_lines on|off` needs the new setting to take effect
--- immediately rather than only on the next reconnect: simplest fix is to
--- tear the 8 triggers down and re-add them reading the option fresh. Called
--- once from on_load (via register_combat_triggers directly, since there's
--- nothing to tear down yet) and again from set_opt below whenever that one
--- option changes.
-local function reregister_combat_triggers()
-  unregister_combat_triggers()
-  register_combat_triggers()
 end
 
 -- "ready" convention: same as pages/stats.lua's own fmt_time (secs <= 0 ->
@@ -298,6 +253,29 @@ local function print_sources()
   buffer.color_print(nil, "DAA520", string.format(
     "  frames %d, foreign %d, malformed %d",
     gs.frames, gs.foreign, gs.malformed))
+
+  -- `/vik source` is also the quickest way to diagnose map hover metadata:
+  -- terrain glyphs can still render even when their landmark records (the
+  -- names and owners used by hover) are absent or out of alignment.
+  local w, h = tonumber(S.vmap_w) or 0, tonumber(S.vmap_h) or 0
+  local rows, pois = S.vmap_rows or {}, S.vmap_pois or {}
+  local settlements, outside = 0, 0
+  for _, poi in ipairs(pois) do
+    if poi.type == "player" or poi.type == "capital" or poi.type == "lineage" then
+      settlements = settlements + 1
+      local x, y = tonumber(poi.x), tonumber(poi.y)
+      local inside = x and y and x >= 0 and y >= 0 and x < w and y < h
+      if not inside then outside = outside + 1 end
+      local glyph = inside and ((rows[y + 1] or ""):sub(x + 1, x + 1)) or "?"
+      buffer.color_print(nil, "DAA520", string.format(
+        "  map %s %q owner=%q at (%s,%s) glyph=%q%s",
+        tostring(poi.type), tostring(poi.name or ""), tostring(poi.owner or ""),
+        tostring(poi.x), tostring(poi.y), glyph, inside and "" or " OUTSIDE"))
+    end
+  end
+  buffer.color_print(nil, "DAA520", string.format(
+    "  map %dx%d rows=%d landmarks=%d settlements=%d outside=%d",
+    w, h, #rows, #pois, settlements, outside))
 end
 
 local function print_status()
@@ -353,6 +331,11 @@ local function set_opt(rest)
     return
   end
   local current = page_opts.get(opt)
+  if (opt == "show_map_icons" or opt == "show_sea_chart_icons" or opt == "show_war_ascii")
+      and not require("tiles").available() then
+    buffer.color_print(nil, "DAA520", "Viking: image/ASCII switching requires GUI mode.")
+    return
+  end
   if current == nil then
     buffer.color_print(nil, "DAA520", "Viking: unknown page option '" .. opt .. "'")
     return
@@ -367,9 +350,6 @@ local function set_opt(rest)
     return
   end
   page_opts.set(opt, new_val)
-  if opt == "gag_status_lines" then
-    reregister_combat_triggers()
-  end
   buffer.color_print(nil, "DAA520", "Viking: " .. opt .. " = " .. (new_val and "on" or "off"))
 end
 
@@ -398,6 +378,8 @@ function M.vik_command(args)
     elseif rest == "off" then want = false end
     local now = protocol.trace(want)
     buffer.color_print(nil, "DAA520", "Viking protocol trace: " .. (now and "on" or "off"))
+  elseif sub_lower == "mapdebug" or sub_lower == "map-debug" then
+    popups.debug("map")
   elseif sub == "save" then
     persist.save()
     buffer.color_print(nil, "DAA520", "Viking guild data saved.")
@@ -447,8 +429,7 @@ function M.vik_command(args)
   elseif sub_lower == "saga" or sub_lower == "warlog" then
     -- The full war and battle sagas, scrolling. The right-click menu's
     -- "Recent war/battle log" prints the last 15 to the output for a glance;
-    -- this is the whole of what the server sends (saga.h keeps 40 per
-    -- category and wires 20 of each onto Guild.War).
+    -- this is the whole of what saga.h keeps (40 beats per category).
     popups.toggle("war_saga")
   elseif sub_lower == "pop" then
     local key = rest:lower()
@@ -490,18 +471,8 @@ function M.on_load()
   -- here.
   gmcp_id = gmcp.on("Guild", function(pkg, data) protocol.on_gmcp(pkg, data) end)
 
-  -- Fix 1: persist.load() must run BEFORE the initial combat-trigger
-  -- registration, not after. register_combat_triggers() reads
-  -- page_opts.get("gag_status_lines") fresh at call time (see its comment
-  -- above), so a persisted gag_status_lines=false has to already be applied
-  -- by the time this first registration happens -- otherwise every session
-  -- silently re-gags the 8 hp-bar triggers regardless of what the user last
-  -- saved, and only a subsequent /vik set flip would notice. persist.load
-  -- depends only on market/protocol/page_opts/window, all required above
-  -- this point, so moving it earlier has no ordering hazard of its own.
   persist.load()
 
-  register_combat_triggers()
   for _, t in ipairs(notify.triggers) do
     notify_trigger_ids[#notify_trigger_ids + 1] = trigger.add(t.pattern, t.fn)
   end
@@ -600,7 +571,6 @@ function M.on_unload()
   gmcp.remove(gmcp_id)
   gmcp.remove(combat_gmcp_id)
   timer.cancel(countdown_id)
-  unregister_combat_triggers()
   for _, tid in ipairs(notify_trigger_ids) do
     trigger.remove(tid)
   end

@@ -54,6 +54,8 @@ local track = require("popups.pointer_track").tracker()
 local page_menu = require("page_menu")
 
 local window = {}
+local recorded_boards = {}
+local pointer_board = nil
 
 -- Ordered page registry. Task 9 replaces the last two placeholder entries
 -- (army/war); no PAGES entry still points at pages.placeholder after this --
@@ -101,6 +103,7 @@ window.PAGES = {
   -- Sea is also available as `/vik sea`; in the main Viking window it is a
   -- normal pane page, alongside Builds, People, Goods and Bonds.
   { key = "sea",    label = "Sea",    mod = sea_page },
+  { key = "map",    label = "Map",    mod = require("popups.map") },
 }
 
 local pages_by_key = {}
@@ -133,6 +136,11 @@ end
 -- page_scroll behavior) -- nothing here touches `scrollers`.
 function window.set_page(key)
   if not pages_by_key[key] then return false end
+  if pointer_board and pointer_board.mod.on_pointer then
+    pointer_board.mod.on_pointer({kind="cancel"}, {cell_from_xy=function() end})
+  end
+  pointer_board = nil
+  recorded_boards = {}
   current_key = key
   ui.dirty()
   return true
@@ -169,6 +177,8 @@ local tab_spans = {}
 local page_targets = {}
 local recorded_tab_rows = 0
 local recorded_offset = 0
+local recorded_width = 0
+local recorded_image_limit = 2
 
 local SEPARATOR = " "
 
@@ -251,7 +261,7 @@ function window.render(rect, opts)
   if body_h <= 0 then return end
 
   local page = pages_by_key[current_key]
-  local lines, targets = page.mod.lines(w)
+  local lines, targets, boards, image_limit = require("tiles").layout(page.mod, w, body_h)
 
   local sc = scrollers[current_key]
   -- Only the LOCAL render pass may adjust the scroller's height-based clamp,
@@ -287,6 +297,9 @@ function window.render(rect, opts)
   if lera.render_pass() ~= "remote" then
     page_targets = targets or {}
     recorded_offset = offset
+    recorded_width = w
+    recorded_image_limit = image_limit
+    recorded_boards = boards or {}
   end
 
   local body_y = rect:y() + tab_rows
@@ -294,6 +307,7 @@ function window.render(rect, opts)
     ui.text_ansi(ui.rect(rect:x(), body_y + (i - first), w, 1),
       pagelib.trunc(lines[i], w))
   end
+  require("tiles").render(page.mod, ui.rect(rect:x(), body_y, w, body_h), offset, boards)
 end
 
 -- Maps a pane-local event's row/col onto the current page's own `targets`
@@ -345,6 +359,10 @@ function window.on_pointer(event)
   -- would leave that gesture's record behind for a later up to match against.
   if event.kind == "cancel" then
     track.clear()
+    if pointer_board and pointer_board.mod.on_pointer then
+      pointer_board.mod.on_pointer(event, {cell_from_xy=function() end})
+    end
+    pointer_board = nil
     return false
   end
 
@@ -376,6 +394,39 @@ function window.on_pointer(event)
       return false
     end
     return false
+  end
+
+  -- Inline maps use the same pointer handlers as their detached popups.
+  -- Pin a press to its board until release, including when GMCP updates it.
+  if event.y >= recorded_tab_rows and (event.button == "left" or event.kind == "move") then
+    local board = pointer_board
+    if not board then
+      local row = event.y - recorded_tab_rows + recorded_offset
+      for _, b in ipairs(recorded_boards) do
+        if b.full_page or (b.geometry and row >= b.offset
+            and row < b.offset + b.geometry.height) then board = b; break end
+      end
+    end
+    if board and board.mod.on_pointer then
+      local ev = {}
+      for k,v in pairs(event) do ev[k] = v end
+      ev.y = event.y - recorded_tab_rows
+      ev.width = recorded_width
+      local ctx = {
+        close = function() end,
+        cell_from_xy = function(x,y)
+          if board.geometry then return board.geometry.cell_at(x, y+recorded_offset-board.offset) end
+        end,
+      }
+      if board.full_page then ctx.line_from_y = function(y) return y+recorded_offset+1 end end
+      local consumed = board.mod.on_pointer(ev, ctx)
+      if event.kind == "down" and consumed then pointer_board = board end
+      if event.kind == "up" then pointer_board = nil end
+      if consumed then return true end
+    end
+  elseif event.kind == "up" and pointer_board then
+    pointer_board.mod.on_pointer({kind="cancel"}, {cell_from_xy=function() end})
+    pointer_board = nil
   end
 
   if event.button ~= "left" then return false end
@@ -410,6 +461,13 @@ function window.on_pointer(event)
     return true
   end
   return false
+end
+
+local pointer = window.on_pointer
+function window.on_pointer(event)
+  return require("maplib").with_limit(recorded_image_limit, function()
+    return pointer(event)
+  end)
 end
 
 return window

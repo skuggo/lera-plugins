@@ -172,11 +172,37 @@ end
 -- 14110, 14201).
 local function make_grid(b)
   local w, h = b.width or 8, b.height or 8
+  local tiles = require("tiles")
+  local rows = {}
+  for r = 1, h do rows[r] = (b.terrain_rows or {})[h-r+1] or string.rep(".", w) end
+  local tile = tiles.enabled("battle") and tiles.board("battle", rows, w, h)
   local dz = b.dz or 2
   local deploying = (b.phase == "deploy")
 
   return {
     w = w, h = h,
+    -- The terrain under an overlay marker, so maplib can draw the ground
+    -- first and let a marker with a transparent backdrop sit on it.
+    under = tile and function(c, r) return tile(c, r) end or nil,
+    image = tile and function(c, r)
+      local game_row = h-r
+      local works = ((b.works_rows or {})[game_row] or ""):sub(c+1,c+1)
+      local unit = unit_at(b, coord_at(c,r,h))
+      if unit then
+        local known = {skirmishers=true, bogmenn=true, shieldwall=true, huscarls=true,
+          berserkir=true, moose=true, ally_levy=true, siege=true,
+          foe_raiders=true, foe_levy=true, foe_hird=true}
+        if not known[unit.utype] then return nil end
+        local side = unit.side == "you" and "you" or "foe"
+        local name = "unit_" .. unit.utype .. "_" .. side
+        local ord = tonumber(unit.ord) or 0
+        if ord >= 1 and ord <= 9 then name = name .. "_" .. math.floor(ord) end
+        return tiles.city(name), true
+      end
+      if works == "v" or works == "u"
+          or (deploying and game_row <= dz) then return nil end
+      return tile(c, r)
+    end,
     cell = function(gc, gr)
       local r_game = h - gr
       local coord = coord_at(gc, gr, h)
@@ -340,12 +366,12 @@ local function build_lines(width)
   if not has_grid then return out, nil end
 
   local b = S.battle
-  for _, l in ipairs(maplib.render(make_grid(b), grid_opts(b))) do out[#out + 1] = l end
+  for _, l in ipairs(maplib.render(make_grid(b), grid_opts(b), width)) do out[#out + 1] = l end
   details.append_grid(out, hover, width, b.width or 8, b.height or 8,
     function(c, r) return hover_text(b, c, r) end)
   for _, l in ipairs(legend_lines(width, b)) do out[#out + 1] = l end
   out[#out + 1] = pagelib.trunc(string.format(
-    "%sCommand %d/%d%s   %sFraegd %d%s",
+    "%sCommand %d/%d%s   %sFraegd: %d%s",
     C.yellow, b.spent or 0, b.budget or 0, RESET,
     C.bright_cyan, b.war_points or S.war_points or 0, RESET), width)
   out[#out + 1] = pagelib.trunc(actions_line_text(b), width)
@@ -385,10 +411,16 @@ function M.actions_line_index(width)
   return idx
 end
 
+function M.tile_grid(width)
+  if not S.battle then return {}, nil end
+  local grid = make_grid(S.battle)
+  return maplib.render(grid, grid_opts(S.battle), width), maplib.geometry(grid, grid_opts(S.battle), width)
+end
+
 function M.geometry(width)
   local _, has_grid = pre_grid_lines(width)
   if not has_grid then return nil end
-  return maplib.geometry(make_grid(S.battle), grid_opts(S.battle))
+  return maplib.geometry(make_grid(S.battle), grid_opts(S.battle), width)
 end
 
 function M.grid_line_offset(width)

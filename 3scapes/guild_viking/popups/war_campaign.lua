@@ -167,6 +167,14 @@ local GRID_OPTS = { col_headers = true, row_headers = true,
 local function make_grid(wm)
   local dim = wm.dim or #(wm.rows or {})
   local rows = wm.rows or {}
+  local tiles = require("tiles")
+  -- Not `enabled and board(...)`: `and` keeps only the first return value,
+  -- and the third (ground) is what keeps a rock cell from going black.
+  local tile, ground
+  if tiles.enabled("campaign") then
+    local _
+    tile, _, ground = tiles.board("campaign", rows, dim, dim)
+  end
   local ov, wks = {}, {}
   local you_c, you_r = -1, -1
   local sel_c, sel_r = -1, -1
@@ -183,6 +191,40 @@ local function make_grid(wm)
 
   return {
     w = dim, h = dim,
+    -- The terrain under an overlay marker, so maplib can draw the ground
+    -- first and let a marker with a transparent backdrop sit on it.
+    -- `ground`, not `tile`: they differ exactly where a terrain tile is itself
+    -- a transparent sprite (rock), which needs real ground drawn beneath it.
+    under = ground and function(c, r) return ground(c, r) end or nil,
+    image = tile and function(c, r)
+      local key = c .. "," .. r
+      local u = ov[key]
+      if u then
+        if u.id == "A" then return tiles.city("camp_host_you"), true end
+        if u.id == "F" or u.kind == "ally" then return tiles.city("camp_ally_you"), true end
+        if tonumber(u.id) then return tiles.city("camp_foe_foe"), true end
+        -- The objective marker and the waystone landmarks used to fall through
+        -- to nil, which draws no image at all -- so on a tiled board they were
+        -- the two cells still showing their raw glyph ("*" and "w", the latter
+        -- reading as water because w is also the terrain glyph for it).
+        if u.id == "*" then return tiles.city("camp_objective"), true end
+        if type(u.id) == "string" and u.id:sub(1, 1) == "P" then
+          return tiles.city(u.id == "P1" and "camp_landmark_taken"
+                                          or "camp_landmark"), true
+        end
+        -- A detachment is one of yours, so it wears your colours; kingdom.lua
+        -- passes its own server id through, which is neither numeric nor one of
+        -- the fixed letters above.
+        if u.kind == "detach" then return tiles.city("camp_host_you"), true end
+        -- Anything else: fall through to the terrain rather than to nil. nil
+        -- used to mean "draw nothing at all", which left the cell showing the
+        -- renderer's black clear colour -- a new overlay kind on the server
+        -- should look like plain ground here, not like a hole.
+        return tile(c, r)
+      end
+      if wks[key] then return tiles.city("camp_dugout"), true end
+      return tile(c, r)
+    end,
     cell = function(c, r)
       local key = c .. "," .. r
       local cell
@@ -286,13 +328,20 @@ function M.grid_lines()
   return maplib.render(grid, GRID_OPTS), maplib.geometry(grid, GRID_OPTS).width
 end
 
+function M.tile_grid(width)
+  local wm = S.war_map
+  if not wm or not wm.active then return {}, nil end
+  local grid = make_grid(wm)
+  return maplib.render(grid, GRID_OPTS, width), maplib.geometry(grid, GRID_OPTS, width)
+end
+
 local hover_text
 function M.lines(width)
   local out, has_grid = pre_grid_lines(width)
   if not has_grid then return out end
 
   local wm = S.war_map
-  for _, l in ipairs(maplib.render(make_grid(wm), GRID_OPTS)) do out[#out + 1] = l end
+  for _, l in ipairs(maplib.render(make_grid(wm), GRID_OPTS, width)) do out[#out + 1] = l end
   details.append_grid(out, hover, width, wm.dim or #(wm.rows or {}), wm.dim or #(wm.rows or {}),
     function(c, r) return hover_text(wm, c, r) end)
   out[#out + 1] = pagelib.trunc(C.yellow .. hint_text(wm) .. RESET, width)
@@ -332,7 +381,7 @@ end
 function M.geometry(width)
   local _, has_grid = pre_grid_lines(width)
   if not has_grid then return nil end
-  return maplib.geometry(make_grid(S.war_map), GRID_OPTS)
+  return maplib.geometry(make_grid(S.war_map), GRID_OPTS, width)
 end
 
 function M.grid_line_offset(width)

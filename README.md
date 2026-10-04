@@ -351,6 +351,14 @@ syntax; everything word-shaped lives under `/speedwalk` and `/step`.
 
 ## Chat history selection
 
+When session recording is enabled, `chat_monitor` also records a logical Chat
+source: direct and relayed messages use the same unwrapped ANSI text as companion
+pages. Restored history is included, formatting changes update retained rows,
+and clear starts a new archive epoch. Reload retires the old source and creates
+a new one; ordinary live retention does not delete archived messages. After
+recording stops or fails, the adapter stops its extra formatting work. Older
+Lera versions without the optional recording-source API continue normally.
+
 With a Lera core that supports `wm` history-selection providers, `chat_monitor`
 lets you hold the left mouse button and drag above or below the chat pane to
 scroll and select older or newer text. `Ctrl+C` includes offscreen selected rows,
@@ -650,7 +658,11 @@ push enable, activity grace and rate limits apply. Separate channels keep the
 cask alert from suppressing the nearby restart alert. A cancelled pending restart
 sends no alert. See [autostepper push notifications](3scapes/autostepper/README.md#exploration-push-notifications).
 
-TODO: track or invalidate coordinates when moving manually during a paused run.
+A move the stepper did not send (a typed direction, wimpy, a mob moving you,
+including while paused) drops the explore map, and a running explore stops. A run
+ending with no unvisited exits saves a map dump; see
+[unnoticed moves and dumps](3scapes/autostepper/README.md).
+
 ### Upcoming directions in the map pane
 
 `/minimap next on` shows up to five upcoming parsed speedwalk commands as

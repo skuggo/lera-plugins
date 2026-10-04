@@ -47,20 +47,6 @@ local function vstate(payload)
   protocol.on_gmcp("Guild.State", payload)
 end
 
--- The trigger callbacks, by name, so the latch cases can drive the real ones
--- rather than a stand-in.
-local TRIGGER = {}
-for _, t in ipairs(combat.triggers) do TRIGGER[t.name] = t.fn end
-
--- A full line-1 prompt the real hp_bar_1 regex would have captured, expressed
--- as the callback args it produces (the trigger engine passes the line then
--- each capture). Values are deliberately unlike the GMCP fixture's below, so a
--- test can tell which source wrote a field.
-local function fire_hp_bar_1()
-  TRIGGER.hp_bar_1("H[11|22(33|44)] S[55|66] V[77|88] R[99|110]",
-    "11", "22", "33", "44", "55", "66", "77", "88", "99", "110", nil, nil, nil)
-end
-
 -- ---------------------------------------------------------------------------
 -- hp / threk
 -- ---------------------------------------------------------------------------
@@ -137,7 +123,7 @@ check("gxp *_max land (new data -- the prompt's G[] never carried a maximum)",
       S.mvis == 20000 and S.mkap == 30000 and S.msoe == 1000 and S.maud == 40000,
       table.concat({ tostring(S.mvis), tostring(S.mkap),
                      tostring(S.msoe), tostring(S.maud) }, "/"))
--- The session accumulation is hp_bar_2's, shared rather than copied.
+-- Session accumulation goes through combat.accumulate_xp_session.
 check("a gxp frame with gains accumulates the session totals",
       S.vis_session == 7 and S.kap_session == 3 and S.soe_session == 0
         and S.aud_session == 1,
@@ -246,71 +232,16 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- The latch: GMCP becomes the source of truth, triggers are the fallback
+-- The latch. There is no hp-bar trigger left for it to stand down (GMCP is the
+-- only source now), but it still records per connection that vitals arrived.
 -- ---------------------------------------------------------------------------
-
--- Fallback direction first, from a clean connection: with no GMCP frame seen,
--- the trigger writes exactly as it always did.
 state.reset_connection()
-S.hp, S.mhp, S.threk, S.mthrek, S.seid = 0, 0, 0, 0, 0
 check("reset_connection clears the vitals latch", S.vitals_gmcp ~= true,
       tostring(S.vitals_gmcp))
-fire_hp_bar_1()
-check("with no GMCP frame seen, the hp-bar trigger still writes hp",
-      S.hp == 11 and S.mhp == 22, S.hp .. "/" .. S.mhp)
-check("with no GMCP frame seen, the hp-bar trigger still writes the pools",
-      S.seid == 55 and S.mseid == 66, S.seid .. "/" .. S.mseid)
-
--- Now a GMCP frame arrives and takes over.
 vstate({ hp = { cur = 900, max = 1000, threk = 0, mthrek = 0, delta = 0 } })
 check("a vitals frame sets the latch", S.vitals_gmcp == true, tostring(S.vitals_gmcp))
 check("the vitals frame wrote hp", S.hp == 900 and S.mhp == 1000,
       S.hp .. "/" .. S.mhp)
-
--- The same trigger that worked a moment ago is now a no-op: the prompt line
--- still arrives (it has to -- init.lua's triggers are also what GAG it from
--- the main buffer), it just no longer writes.
---
--- The pools get a sentinel first. Asserting `S.seid ~= 55` would not test
--- anything: the pre-latch trigger above already wrote 55, and the GMCP frame
--- carried only `hp`, so 55 is what an UNGUARDED trigger would leave there too.
-S.seid, S.mseid = 4242, 4242
-fire_hp_bar_1()
-check("once latched, the hp-bar trigger does not overwrite GMCP's hp",
-      S.hp == 900 and S.mhp == 1000, S.hp .. "/" .. S.mhp)
-check("once latched, the hp-bar trigger does not write the pools",
-      S.seid == 4242 and S.mseid == 4242, S.seid .. "/" .. S.mseid)
-check("once latched, the hp-bar trigger does not write the deltas either",
-      S.hp_delta == 0, S.hp_delta)
-
--- Every one of the eight triggers has to respect the latch, not just line 1 --
--- a single unguarded callback puts a second writer back on the same fields.
-S.rndz, S.ldng, S.stfx = 4242, 4242, { { name = "sentinel" } }
-TRIGGER.hp_bar_1_cont("--] C[7/7]", "7", "7")
-TRIGGER.hp_bar_2("G[1(1)|2(2)|3(3)|4(4)] L[5|6(7%)] E[foo|bar|8]",
-  "1", "1", "2", "2", "3", "3", "4", "4", "5", "6", "7", "foo", "bar", "8")
-TRIGGER.hp_bar_2_cont("9]", "9")
-TRIGGER.hp_bar_2_vis("Vis:1  Kap:2  Soe:3  Aud:4  L[5|6] E[None]",
-  "1", "2", "3", "4", "5", "6", "None")
-TRIGGER.hp_bar_3("[gald:1]", "gald:1")
-TRIGGER.hp_bar_3_open("[gald:1", "gald:1")
-TRIGGER.hp_bar_3_cont("veth:2]", "veth:2")
-check("once latched, no hp-bar trigger touches rndz", S.rndz == 4242, S.rndz)
-check("once latched, no hp-bar trigger touches ledung", S.ldng == 4242, S.ldng)
-check("once latched, no hp-bar trigger touches the effects list",
-      #S.stfx == 1 and S.stfx[1].name == "sentinel",
-      #S.stfx .. "/" .. tostring(S.stfx[1] and S.stfx[1].name))
-
--- A reconnect re-earns it: the latch is per-connection, matching the MIP-side
--- per-key latch, so a reconnect that never negotiates GMCP falls back rather
--- than freezing on the last connection's numbers.
-state.reset_connection()
-check("reset_connection clears the latch again", S.vitals_gmcp ~= true,
-      tostring(S.vitals_gmcp))
-S.hp, S.mhp = 0, 0
-fire_hp_bar_1()
-check("after a reconnect with no GMCP frame, the trigger writes again",
-      S.hp == 11 and S.mhp == 22, S.hp .. "/" .. S.mhp)
 
 if failures > 0 then os.exit(1) end
 print("ALL GUILD_VIKING GMCP VITALS TESTS PASSED")

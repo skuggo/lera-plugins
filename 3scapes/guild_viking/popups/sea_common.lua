@@ -232,6 +232,39 @@ function M.queue_lines(width)
   return out
 end
 
+-- One prose sentence, wrapped to the pane under a bullet. wrap_parts breaks
+-- BETWEEN parts and never splits an escape sequence, so the words go in as
+-- parts with a plain space between them.
+local function wrap_prose(width, bullet, text)
+  local out = {}
+  local indent = string.rep(" ", #bullet + 1)
+  local prefix = bullet .. " "
+  local limit = width - #indent
+  if limit < 8 then limit = 8 end
+  local line = ""
+  local function flush()
+    if line == "" then return end
+    out[#out + 1] = pagelib.trunc(C.dim .. prefix .. line .. RESET, width)
+    prefix = indent
+    line = ""
+  end
+  for word in tostring(text):gmatch("%S+") do
+    -- A word longer than the pane can only be broken mid-word; trunc would
+    -- silently eat the rest of the sentence with it.
+    while #word > limit do
+      flush()
+      out[#out + 1] = pagelib.trunc(C.dim .. prefix .. word:sub(1, limit) .. RESET, width)
+      prefix = indent
+      word = word:sub(limit + 1)
+    end
+    if line == "" then line = word
+    elseif #line + 1 + #word > limit then flush(); line = word
+    else line = line .. " " .. word end
+  end
+  flush()
+  return out
+end
+
 -- ---------------------------------------------------------------------------
 -- Saga (guild_viking.lua:15231-15242, gated show_sea_saga). "Captain style:"
 -- entries are filtered out verbatim (guild_viking.lua:15239); the "No recent
@@ -248,7 +281,12 @@ function M.saga_lines(width)
   else
     for _, line in ipairs(saga) do
       if not tostring(line):match("^Captain style:%s") then
-        out[#out + 1] = pagelib.trunc(C.dim .. "- " .. RESET .. C.dim .. tostring(line) .. RESET, width)
+        -- Saga lines are prose, not labels: truncating one to the pane width
+        -- cut the sentence off mid-word. Wrap it instead, hanging under the
+        -- bullet so the block still reads as one entry per dash.
+        for _, row in ipairs(wrap_prose(width, "-", tostring(line))) do
+          out[#out + 1] = row
+        end
       end
     end
   end
@@ -266,7 +304,9 @@ function M.memory_lines(width)
     out[#out + 1] = pagelib.trunc(C.dim .. "No crew memories yet" .. RESET, width)
   else
     for _, line in ipairs(mem) do
-      out[#out + 1] = pagelib.trunc(C.dim .. "- " .. RESET .. C.dim .. tostring(line) .. RESET, width)
+      for _, row in ipairs(wrap_prose(width, "-", tostring(line))) do
+        out[#out + 1] = row
+      end
     end
   end
   return out

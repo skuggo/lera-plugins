@@ -95,9 +95,10 @@ end
 -- size can never reclamp -- and silently move -- the local user's scroll
 -- offset (see window.lua's render() comment for the full rationale; this is
 -- the identical mechanism, reused here for the same reason).
-local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
+local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn, image_limit)
   local last_count = 0
   local last_width = 0
+  local last_image_limit = 2
   local sc = scroller.make_top_scroller(function() return last_count end)
 
   local wrapper = {}
@@ -105,10 +106,13 @@ local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
   function wrapper.render(rect, opts)
     local w, h = rect:w(), rect:h()
     if w <= 0 or h <= 0 then return end
-    local lines = lines_fn(w)
+    local lines, _, boards, chosen_image_limit = require("tiles").layout({lines=lines_fn,
+      geometry=geometry_fn, grid_line_offset=grid_line_offset_fn,
+      image_limit=image_limit}, w, h)
     if lera.render_pass() ~= "remote" then
       last_count = #lines
       last_width = w
+      last_image_limit = chosen_image_limit
       sc.set_height(h)
     end
     local offset = sc.offset()
@@ -118,6 +122,8 @@ local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
       ui.text_ansi(ui.rect(rect:x(), rect:y() + (i - first), w, 1),
         pagelib.trunc(lines[i], w))
     end
+    require("tiles").render({ geometry=geometry_fn, grid_line_offset=grid_line_offset_fn },
+      rect, offset, boards)
   end
 
   wrapper.scroll = sc.scroll
@@ -148,7 +154,9 @@ local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
           return geom.cell_at(x, y + sc.offset() - line_offset)
         end
       end
-      return on_pointer_fn(ev, ctx)
+      return require("maplib").with_limit(last_image_limit, function()
+        return on_pointer_fn(ev, ctx)
+      end)
     end
   end
 
@@ -156,8 +164,8 @@ local function wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
 end
 
 local function open_wrapper(title, lines_fn, on_pointer_fn, on_close_fn, geometry_fn,
-                             grid_line_offset_fn)
-  local wrapper = wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn)
+                             grid_line_offset_fn, image_limit)
+  local wrapper = wrap(lines_fn, on_pointer_fn, geometry_fn, grid_line_offset_fn, image_limit)
   require("wm").popup.open(wrapper, {
     title = title,
     width = 0.9,
@@ -189,7 +197,7 @@ function popups.toggle(name)
     -- close, whatever closed it (a second toggle, Escape, an outside
     -- click, or being replaced) -- see this file's header comment.
     if mod.reset then mod.reset() end
-  end, mod.geometry, mod.grid_line_offset)
+  end, mod.geometry, mod.grid_line_offset, mod.image_limit)
   shown_name = name
   return true
 end
@@ -213,7 +221,19 @@ function popups.open_page(page_key)
 
   open_wrapper(page.label, page.mod.lines, nil, function()
     shown_name = nil
-  end)
+  end, nil, nil, page.mod.image_limit)
+  return true
+end
+
+-- Lightweight diagnostics for a registered popup.  Kept separate from the
+-- normal toggle path so a debug command never opens or redraws a window.
+function popups.debug(name)
+  local mod = registry[name]
+  if not mod or not mod.debug then
+    buffer.color_print(nil, "DAA520", "Viking: no debug probe for '" .. tostring(name) .. "'")
+    return false
+  end
+  mod.debug()
   return true
 end
 

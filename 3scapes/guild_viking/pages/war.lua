@@ -22,7 +22,9 @@
 --   Battle (show_war_battle, 14084-14603) -- deploy/turn header; the tactical
 --     grid (dropped); command budget + Fraegd (war points); either the
 --     deploy-phase reserve/deployed rosters or the turn-phase your-host/enemy
---     rosters; "No battle underway" when state.battle is nil.
+--     rosters; "No battle underway" when state.battle is nil. The running
+--     Fraegd total is NOT here: it is the page's first line (below), since
+--     it outlives any one battle.
 --   War Council (show_war_council, 14606-14624) -- an incoming-threat line
 --     or "no power marches," then the held-claims list or "no claims held."
 --   Campaigns (show_war_campaigns AND state.war.campaigns non-empty,
@@ -118,25 +120,6 @@ local C = pagelib.C
 
 local M = {}
 
--- Drawing the board inline rather than pointing at a popup. The two views
--- share popups/war_*.lua's make_grid(), so they cannot drift apart.
---
--- Declines and falls back to the old pointer when the board is wider than
--- the pane: maplib renders at the board's natural width and a page line
--- wider than its pane would spill, and a war map is not something to read
--- half of.
-local function grid_or_hint(add, width, mod_name, hint)
-  local ok, mod = pcall(require, mod_name)
-  if ok and mod and mod.grid_lines then
-    local lines, gw = mod.grid_lines()
-    if lines and #lines > 0 and gw <= width then
-      for _, l in ipairs(lines) do add(l) end
-      return
-    end
-  end
-  add(pagelib.trunc(C.dim .. hint .. pagelib.RESET, width))
-end
-
 -- ---------------------------------------------------------------------------
 -- Campaign Map (guild_viking.lua:13620-14016, UNGATED -- war_map.active)
 -- ---------------------------------------------------------------------------
@@ -186,8 +169,7 @@ local function campaign_map_lines(add, width, wm)
     return
   end
 
-  grid_or_hint(add, width, "popups.war_campaign",
-               "Campaign map too wide for this pane -- '/vik war'")
+  add(nil, "popups.war_campaign")
 
   -- The legend the text board prints under the map. Without it the pane showed
   -- a grid of glyphs and nothing that said what any of them were, what the war
@@ -461,12 +443,10 @@ local function battle_lines(add, width)
     add(pagelib.header(width, string.format("Battle vs %s  --  turn %d", b.target or "?", b.turn or 0)))
   end
 
-  grid_or_hint(add, width, "popups.war_battle",
-               "Battle map too wide for this pane -- '/vik war'")
+  add(nil, "popups.war_battle")
 
-  add(pagelib.trunc(string.format("%sCommand %d/%d%s   %sFraegd %d%s",
-    C.yellow, b.spent or 0, b.budget or 0, pagelib.RESET,
-    C.bright_cyan, b.war_points or S.war_points or 0, pagelib.RESET), width))
+  add(pagelib.trunc(string.format("%sCommand %d/%d%s",
+    C.yellow, b.spent or 0, b.budget or 0, pagelib.RESET), width))
 
   if deploying then
     deploy_lines(add, width, b)
@@ -559,7 +539,28 @@ end
 function M.lines(width)
   width = width or 80
   local lines = {}
-  local function add(s) lines[#lines + 1] = s end
+  local boards = {}
+  local function add(s, board_name)
+    if board_name then
+      local mod = require(board_name)
+      local rows, geom = mod.tile_grid(width)
+      if geom and geom.width <= width then
+        boards[#boards + 1] = { geometry=geom, offset=#lines, mod=mod }
+        for _, row in ipairs(rows) do lines[#lines + 1] = row end
+      else
+        lines[#lines + 1] = pagelib.trunc("Map too wide -- /vik war", width)
+      end
+    else
+      lines[#lines + 1] = s
+    end
+  end
+
+  -- Fraegd first, before any section: it is a running total that
+  -- handlers/kingdom.lua writes from every Guild.War frame, active or not,
+  -- so it belongs in one fixed place rather than buried in whichever
+  -- section happens to be showing.
+  add(pagelib.trunc(string.format("%sFraegd: %d%s",
+    C.bright_cyan, S.war_points or 0, pagelib.RESET), width))
 
   local wm = S.war_map
   if wm and wm.active then
@@ -585,7 +586,7 @@ function M.lines(width)
     houses_lines(add, width)
   end
 
-  return lines
+  return lines, nil, boards
 end
 
 return M

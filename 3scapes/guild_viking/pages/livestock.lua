@@ -205,6 +205,36 @@ local function herd_stats_row(width, herd)
   return pagelib.trunc(raw, width)
 end
 
+-- The management row under each herd. Every field here is a number you act
+-- on, and reading it as one grey run meant scanning it word by word: pen
+-- space that has run out is the difference between a herd that grows and one
+-- that does not, and a pending head is work already paid for. So the labels
+-- stay dim and the values carry the meaning -- a count that is zero is dim
+-- too, because "nothing to see" is most of the time.
+local function count_cell(label, n, colour)
+  local value = (n or 0) > 0 and (colour .. n .. pagelib.RESET)
+                             or (C.dim .. "0" .. pagelib.RESET)
+  return C.dim .. label .. ":" .. pagelib.RESET .. value
+end
+
+local function management_row(mg)
+  -- Free pen space is the one field whose ZERO is the alarming state: a full
+  -- pen silently stops the herd growing, so it is called out rather than
+  -- dimmed away.
+  local free = (mg.free or 0) > 0
+    and (C.green .. mg.free .. pagelib.RESET)
+    or (C.bright_red .. "0" .. pagelib.RESET)
+  local auto = mg.auto_slaughter == 1
+    and (C.yellow .. "on" .. pagelib.RESET)
+    or (C.dim .. "off" .. pagelib.RESET)
+  return table.concat({
+    C.dim .. "Penfree:" .. pagelib.RESET .. free,
+    count_cell("Pending", mg.pending, C.cyan),
+    count_cell("Protected", mg.protected, C.bright_cyan),
+    C.dim .. "Auto-cull:" .. pagelib.RESET .. auto,
+  }, "  ")
+end
+
 local function herds_lines(add, width)
   add(pagelib.header(width, "My Herds"))
   if not S.herds or next(S.herds) == nil then
@@ -218,8 +248,7 @@ local function herds_lines(add, width)
       add(herd_stats_row(width, herd))
       local mg = herd.management
       if mg then
-        add(pagelib.trunc(string.format("Penfree:%d  pending:%d  protected:%d  auto-cull:%s",
-          mg.free, mg.pending, mg.protected, mg.auto_slaughter == 1 and "on" or "off"), width))
+        add(pagelib.trunc(management_row(mg), width))
       elseif herd.management_present then
         add(pagelib.trunc("Management:? (invalid metadata; auto-buy paused)", width))
       end
@@ -365,6 +394,30 @@ end
 -- Livestock Find (guild_viking.lua:10030-10098, gated show_stock_find)
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- Column helpers for the listing blocks below.
+--
+-- string.format("%-14s") only PADS: a value wider than its column runs
+-- straight through the next field, and every column after it on that row
+-- loses its alignment ("Icelandic Settlement" is 20 characters against a
+-- 14-wide breed column). pagelib.trunc pads AND truncates, and counts
+-- visible cells rather than bytes, so a cell can carry colour.
+-- ---------------------------------------------------------------------------
+local function cell(text, w) return pagelib.trunc(tostring(text or ""), w) end
+
+-- Size a column to the longest value it will actually show, clamped: one long
+-- name should not be able to eat the row, and a short list should still line
+-- up on a sensible minimum rather than hugging its widest entry.
+local function fit_width(values, min_w, max_w)
+  local w = min_w
+  for _, v in ipairs(values) do
+    local n = #tostring(v or "")
+    if n > w then w = n end
+  end
+  if w > max_w then w = max_w end
+  return w
+end
+
 local function find_lines(add, width)
   add(pagelib.header(width, "Livestock Find"))
   local lf = S.lfind or {}
@@ -387,10 +440,22 @@ local function find_lines(add, width)
 
   if #offers > 0 then
     add(pagelib.trunc(C.dim .. "Offers" .. pagelib.RESET, width))
+    local breeds, prices = {}, {}
     for _, o in ipairs(offers) do
-      add(pagelib.trunc(string.format("#%-3d %dx %-14s Q%d  %dd  %s%s",
-        o.id or 0, o.count or 0, breed_name(o.breed), o.quality or 0, o.price or 0,
-        cc.fmt_time(o.secs), trait_tag(o.trait)), width))
+      breeds[#breeds + 1] = breed_name(o.breed)
+      prices[#prices + 1] = (o.price or 0) .. "d"
+    end
+    local offer_bw = fit_width(breeds, 12, 20)
+    local offer_pw = fit_width(prices, 5, 9)
+    for _, o in ipairs(offers) do
+      add(pagelib.trunc(table.concat({
+        "#" .. cell(o.id or 0, 3),
+        cell((o.count or 0) .. "x", 4),
+        cell(breed_name(o.breed), offer_bw),
+        "Q" .. cell(o.quality or 0, 2),
+        pagelib.rjust((o.price or 0) .. "d", offer_pw),
+        cc.fmt_time(o.secs) .. trait_tag(o.trait),
+      }, " "), width))
       -- LEGACY draws this row in one flat dim colour (0x888888), unlike the
       -- per-letter rainbow used for My Herds and Market -- kept byte-faithful
       -- rather than upgraded to match those.
@@ -402,10 +467,23 @@ local function find_lines(add, width)
 
   if #auctions > 0 then
     add(pagelib.trunc(C.dim .. "Auctions" .. pagelib.RESET, width))
+    local breeds, prices = {}, {}
     for _, a in ipairs(auctions) do
-      add(pagelib.trunc(string.format("#%-3d %-10s %-14s Q%d  reserve %dd  bid %dd  %s%s",
-        a.id or 0, SP_DISP[a.species] or a.species or "?", breed_name(a.breed),
-        a.quality or 0, a.reserve or 0, a.my_bid or 0, cc.fmt_time(a.secs), trait_tag(a.trait)), width))
+      breeds[#breeds + 1] = breed_name(a.breed)
+      prices[#prices + 1] = math.max(a.reserve or 0, a.my_bid or 0) .. "d"
+    end
+    local auc_bw = fit_width(breeds, 12, 20)
+    local auc_pw = fit_width(prices, 5, 9)
+    for _, a in ipairs(auctions) do
+      add(pagelib.trunc(table.concat({
+        "#" .. cell(a.id or 0, 3),
+        cell(SP_DISP[a.species] or a.species or "?", 10),
+        cell(breed_name(a.breed), auc_bw),
+        "Q" .. cell(a.quality or 0, 2),
+        "reserve " .. pagelib.rjust((a.reserve or 0) .. "d", auc_pw),
+        "bid " .. pagelib.rjust((a.my_bid or 0) .. "d", auc_pw),
+        cc.fmt_time(a.secs) .. trait_tag(a.trait),
+      }, " "), width))
     end
   end
 end
@@ -423,16 +501,31 @@ local function market_lines(add, width)
     add(pagelib.trunc(C.dim .. "No listings" .. pagelib.RESET, width))
     return
   end
+  -- One set of column widths for the WHOLE market, not per settlement: the
+  -- listings read as one table down the page, so a breed that is wide under
+  -- one hold has to move the column under every other hold too.
+  local breeds, prices = {}, {}
+  for _, lin in ipairs(lins) do
+    for _, m in ipairs(S.lmarket[lin] or {}) do
+      breeds[#breeds + 1] = breed_name(m.breed)
+      prices[#prices + 1] = (m.price or 0) .. "d"
+    end
+  end
+  local bw = fit_width(breeds, 12, 20)
+  local pw = fit_width(prices, 5, 9)
+
   for _, lin in ipairs(lins) do
     local listings = S.lmarket[lin]
     if listings and #listings > 0 then
       add(pagelib.trunc(C.yellow .. (LIN_NAMES[lin] or ("Lineage " .. lin)) .. pagelib.RESET, width))
       for _, m in ipairs(listings) do
-        add(pagelib.trunc(string.format("%s#%-3d%s %s%-10s%s %s%-14s%s x%-2d  %dd%s",
-          C.dim, (m.idx or 0) + 1, pagelib.RESET,
-          SP_ANSI2[m.species] or C.white, SP_DISP[m.species] or m.species or "?", pagelib.RESET,
-          C.green, breed_name(m.breed), pagelib.RESET,
-          m.count or 0, m.price or 0, trait_tag(m.trait)), width))
+        add(pagelib.trunc(table.concat({
+          C.dim .. "#" .. cell((m.idx or 0) + 1, 3) .. pagelib.RESET,
+          (SP_ANSI2[m.species] or C.white) .. cell(SP_DISP[m.species] or m.species or "?", 10) .. pagelib.RESET,
+          C.green .. cell(breed_name(m.breed), bw) .. pagelib.RESET,
+          cell("x" .. (m.count or 0), 4),
+          pagelib.rjust((m.price or 0) .. "d", pw) .. trait_tag(m.trait),
+        }, " "), width))
         add(pagelib.trunc(string.format(
           "   %sH:%d%s %sF:%d%s %sY:%d%s %sV:%d%s %sC:%d%s",
           C.green, m.hard or 0, pagelib.RESET,

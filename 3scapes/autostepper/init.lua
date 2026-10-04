@@ -40,14 +40,15 @@ local COLOR_WARN  = "FFC107"   -- amber: a guess, a refusal, something to see
 local COLOR_ERROR = "FF4444"   -- red: the run cannot go on (autotrader's red)
 local COLOR_TRACE = "78909C"   -- slate: /step trace, off by default
 
--- The last HISTORY_MAX log and trace lines, kept whether or not tracing is on,
--- so an exhaustion dump can say what led up to it after the fact.
+-- The last HISTORY_MAX log lines, and the trace lines of a running run, kept
+-- whether or not tracing is on, so an exhaustion dump can say what led up to
+-- it after the fact. Stamped with wall-clock time: lera.time() is whole epoch
+-- seconds, which reads as noise and cannot order lines within a second anyway.
 local HISTORY_MAX = 120
 local history = {}
 
 local function remember(msg)
-  history[#history + 1] = string.format("%9.1f %s",
-    (lera and lera.time and lera.time()) or 0, tostring(msg))
+  history[#history + 1] = os.date("%H:%M:%S") .. " " .. tostring(msg)
   if #history > HISTORY_MAX then table.remove(history, 1) end
 end
 
@@ -69,12 +70,33 @@ local function log_kind(msg, kind)
   log(msg, kind and COLOR_BY_KIND[kind] or COLOR_INFO)
 end
 
+local enabled = false   -- Is autostepper active? Declared here: trace() reads it.
+
 -- /step trace exposes room frames, refreshes, and movement decisions.
 local tracing = false
 
 local function trace(msg)
-  if not tracing then remember("trace: " .. msg); return end
+  -- Idle frames (every room walked by hand traces one) would push a run's
+  -- lead-up out of the history within a few dozen rooms.
+  if not tracing then
+    if enabled then remember("trace: " .. msg) end
+    return
+  end
   log("trace: " .. msg, COLOR_TRACE)
+end
+
+-- Every command the stepper sends goes through here. Lera runs mud.send()
+-- through the plugins' on_send hooks before it returns, so M.on_send() can
+-- tell the stepper's own sends from a script's (an alias or trigger calling
+-- mud.send) by this flag alone.
+local own_sending = false
+
+local function own_send(cmd)
+  own_sending = true
+  local ok, result = pcall(mud.send, cmd)
+  own_sending = false
+  if not ok then error(result, 0) end
+  return result
 end
 
 local sw = nil      -- speedwalk plugin (set in on_load)
@@ -120,7 +142,6 @@ end
 --------------------------------------------------------------------------------
 
 local state = "idle"    -- idle, stepping, fighting
-local enabled = false   -- Is autostepper active?
 local movement_trigger_ids = {}
 local no_target_trigger_id = nil  -- Trigger ID for "There is no X here."
 local failed_attacks = 0  -- count of attacks whose keyword never resolved
@@ -185,6 +206,15 @@ local ARRIVAL_TIMEOUT_MS = 5000
 local arrival_timer = nil
 local arrival_kind = nil  -- "refresh" (start), "setup", or "move"
 local movement_failure = nil
+-- A stop taken mid-step keeps the direction already sent for one arrival
+-- window (explore.stop(true)); its entry landing inside it is the stepper's
+-- own move, committed by explore.settle(). When the window closes the move is
+-- taken not to have happened, exactly as the arrival watchdog would.
+local in_flight_timer = nil
+local function cancel_in_flight()
+  if in_flight_timer then timer.cancel(in_flight_timer) end
+  in_flight_timer = nil
+end
 local frames_seen = 0
 local frames_at_step = 0
 local room_info_sub = nil
@@ -480,23 +510,50 @@ end
 
 -- Room entry lists are marked by the server. Refresh/subscription snapshots
 -- are not arrivals, even when they land while a movement is outstanding.
-local function on_room_contents_frame(info)
-  -- An entry the stepper did not ask for -- wimpy, a mob moving the player,
-  -- a direction typed by hand mid-run or while paused -- moves the player
-  -- without a committed step, so the explore map's dead-reckoned position is
-  -- now wrong. Maze rooms mostly share their neighbours' exits, so the
-  -- contradiction check rarely catches it; instead the offset makes unvisited
-  -- rooms land on recorded coordinates, and the run ends "exhausted" with rooms
-  -- left. The position cannot be recovered in an area without room ids, so the
-  -- map is dropped here and the next start or resume maps afresh.
-  local unasked = info and info.entry and not (enabled and state == "stepping")
-  if unasked and explore and explore.profile and explore.profile() then
+-- An entry the stepper did not ask for -- wimpy, a mob moving the player, a
+-- direction typed while paused -- moves the player without a committed step,
+-- so the explore map's dead-reckoned position is now wrong. Maze rooms mostly
+-- share their neighbours' exits, so the contradiction check rarely catches it;
+-- instead the offset makes unvisited rooms land on recorded coordinates, and
+-- the run ends "exhausted" with rooms left. The position cannot be recovered
+-- in an area without room ids, so the map is dropped and the next start or
+-- resume maps afresh. (A direction typed mid-step lands while the stepper IS
+-- awaiting an entry and cannot be told apart here; check_hand_move() catches
+-- it as it is typed.)
+--
+-- Returns true when the frame is fully handled.
+local function on_unasked_entry()
+  if not explore then return false end
+  if not enabled and explore.in_flight and explore.in_flight() then
+    cancel_in_flight()
+    explore.settle()
+    return true
+  end
+  -- Only a map holding rooms is reset: the fresh one left behind holds none,
+  -- so walking on after one unasked move does not reset (and say so) again.
+  if explore.holds_rooms and explore.holds_rooms() then
     explore.reset("moved without a step; position unknown")
-    if enabled then
-      log("Moved outside the stepper; stopping", COLOR_WARN)
-      M.stop()
-      return
-    end
+  end
+  -- Gated on run_mode, not on a retained profile: a route run's fight is not
+  -- the explore map's business beyond dropping it, and stays as it was.
+  if enabled and run_mode == "explore" then
+    log("Moved outside the stepper; stopping", COLOR_WARN)
+    M.stop()
+    return true
+  end
+  return false
+end
+
+local function on_room_contents_frame(info)
+  if info and info.entry then
+    -- Resuming a held map waits on a refresh, which is never entry-marked; an
+    -- entry here is a move made before the refresh was answered (the tail of
+    -- the step a stop interrupted, or a direction typed), and taking it as the
+    -- answer would file the new room at the old coordinate.
+    local resuming = arrival_kind == "refresh" and run_mode == "explore"
+      and explore and explore.holds_rooms and explore.holds_rooms()
+    local ours = enabled and state == "stepping" and not resuming
+    if not ours and on_unasked_entry() then return end
   end
   if not enabled then return end
   if awaiting_refresh then
@@ -566,8 +623,10 @@ complete_arrival = function()
 end
 
 -- Room.Info updates exits independently; Contents commits the arrival later.
+-- Forwarded while a paused map is held too (the mode ignores it otherwise):
+-- a held move settling after a stop is recorded with the room it landed in.
 local function on_room_info_frame()
-  if explore and explore.active() and explore.on_frame and ri and ri.info then
+  if explore and explore.on_frame and ri and ri.info then
     explore.on_frame(ri.info())
   end
 end
@@ -753,7 +812,7 @@ local function do_attack(monster)
   local cmd = config.attack_cmd .. " " .. send_target
   log("Attacking: " .. monster, COLOR_FIGHT)
   notify(on_attack_callbacks, monster, cmd)
-  mud.send(cmd)
+  own_send(cmd)
 end
 
 -- These route commands do not move the player. Other custom commands may
@@ -767,10 +826,13 @@ end
 
 -- Exhaustion reports. A plugin has no io and no os.getenv in Lera's sandbox,
 -- so they go through the plugin store, alongside the mob-ignore list: the last
--- DUMP_KEEP reports, newest last, in the profile's .storage/autostepper.json.
+-- DUMP_KEEP reports, newest last, in the profile's .storage/autostepper.json,
+-- each one a single newline-joined string (an array of lines would make every
+-- later save of the mob-ignore list re-encode hundreds of entries per dump).
 local DUMP_KEEP = 5
+local last_auto_dump_map = nil  -- map section of the last automatic dump
 
-local function write_explore_dump(why)
+local function build_explore_dump(why)
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
   add(os.date("%Y-%m-%d %H:%M:%S") .. "  " .. tostring(why))
@@ -783,33 +845,70 @@ local function write_explore_dump(why)
     local mobs = ri.monsters and ri.monsters() or {}
     add("roominfo monsters: " .. table.concat(copy_names(mobs), ", "))
   end
+  local map_lines = explore and explore.dump_lines and explore.dump_lines() or {}
   add("-- map")
-  for _, l in ipairs(explore and explore.dump_lines and explore.dump_lines() or {}) do
-    add(l)
-  end
-  add("-- last " .. #history .. " log/trace lines (seconds since client start)")
+  for _, l in ipairs(map_lines) do add(l) end
+  add("-- last " .. #history .. " log lines (local time)")
   for _, l in ipairs(history) do add(l) end
+  return table.concat(lines, "\n"), table.concat(map_lines, "\n")
+end
 
-  -- A diagnostic must never be what breaks a run: any failure here is logged
-  -- and swallowed.
-  local ok, saved = pcall(function()
-    if not (store and store.get and store.set and store.save) then return false end
-    local data = store.get()
-    if type(data) ~= "table" then data = {} end
-    local dumps = type(data.explore_dumps) == "table" and data.explore_dumps or {}
-    dumps[#dumps + 1] = lines
-    while #dumps > DUMP_KEEP do table.remove(dumps, 1) end
-    data.explore_dumps = dumps
-    return store.set(data) and store.save()
+-- The store is reloaded first, so the save carries whatever is on disk now
+-- (another session's mob-ignore edits included). A load that fails -- a
+-- missing file and an unreadable one look the same from here -- is never
+-- followed by a save: writing then would replace a file that merely failed to
+-- parse, ignore list and all. The report goes to lera.log instead.
+--
+-- Returns saved, why-not, kept: kept is true when the report is safely
+-- somewhere -- the store, or lera.log in full -- and false when it is lost.
+local function store_explore_dump(text)
+  if not (store and store.load and store.get and store.set and store.save) then
+    return false, "no plugin store"
+  end
+  if not store.load() then
+    if lera and lera.log then
+      for line in (text .. "\n"):gmatch("([^\n]*)\n") do lera.log("[autostepper dump] " .. line) end
+      return false, "autostepper.json did not load (missing or unreadable), so it was "
+        .. "left alone; the dump went to lera.log instead", true
+    end
+    return false, "autostepper.json did not load (missing or unreadable), so it was left alone"
+  end
+  local data = store.get()
+  if type(data) ~= "table" then return false, "the store holds no table" end
+  local dumps = type(data.explore_dumps) == "table" and data.explore_dumps or {}
+  dumps[#dumps + 1] = text
+  while #dumps > DUMP_KEEP do table.remove(dumps, 1) end
+  data.explore_dumps = dumps
+  if not (store.set(data) and store.save()) then return false, "the store did not save" end
+  return true, nil, true
+end
+
+-- automatic: taken by an exhausted run, and skipped when the map is the one
+-- already dumped, so retrying a resume of an exhausted map cannot push the
+-- report of the real exhaustion out of the last DUMP_KEEP. The map counts as
+-- dumped only once its report is kept: a save that failed is retried the next
+-- time the same map is exhausted.
+local function write_explore_dump(why, automatic)
+  -- A diagnostic must never be what breaks a run: building and saving are
+  -- both inside the pcall, and any failure is logged and swallowed.
+  local ok, saved, err = pcall(function()
+    local text, map_text = build_explore_dump(why)
+    if automatic and map_text == last_auto_dump_map then
+      trace("map unchanged since the last automatic dump; not saving another")
+      return nil
+    end
+    local stored, why_not, kept = store_explore_dump(text)
+    if automatic and kept then last_auto_dump_map = map_text end
+    return stored, why_not
   end)
+  if ok and saved == nil then return false end
   if ok and saved then
     local dir = store.path and store.path()
     log("Map dump saved to " .. (dir and (dir .. "/autostepper.json") or "the plugin store")
         .. " (explore_dumps, newest last)", COLOR_WARN)
     return true
   end
-  log("Could not save the explore dump" .. (ok and "" or (": " .. tostring(saved))),
-      COLOR_WARN)
+  log("Could not save the explore dump: " .. tostring(ok and err or saved), COLOR_WARN)
   return false
 end
 
@@ -863,7 +962,7 @@ local function do_step(monsters)
       else
         log("Explored: no unvisited exits remain", COLOR_RUN)
       end
-      if not at_completion and (reason == "exhausted" or reason == "in flight") then
+      if not at_completion and reason == "in flight" then
         write_explore_dump("explore stopped: " .. reason)
       end
       enabled = false
@@ -886,6 +985,9 @@ local function do_step(monsters)
       -- map and never reach route mode at all.
       if explore.stop then explore.stop() end
       if not at_completion and reason == "exhausted" then
+        -- After the teardown above, so a failing dump cannot leave the run
+        -- half-stopped.
+        write_explore_dump("explore stopped: exhausted", true)
         push_event("explore_exhausted",
           "Autostepper: exploration stopped; no unvisited exits remain.")
       end
@@ -937,7 +1039,7 @@ local function do_step(monsters)
     -- Callbacks and test transports can stop or complete a step synchronously.
     if not enabled or step_dispatch ~= dispatch then return false end
     dispatch.sent = dispatch.sent + 1
-    mud.send(cmd)
+    own_send(cmd)
   end
   if not enabled or step_dispatch ~= dispatch then return false end
   if not moves then return do_step(monsters) end
@@ -1284,7 +1386,7 @@ local function register_command()
     usage = "/step [start|targets|stop|explore [area]|explore off|explore reset|"
       .. "explore leave|chaossea farm <level> <difficulty>|chaossea farm off|"
       .. "mobignore add|remove <name>|mobignore list|mobignore clear|"
-      .. "status|trace [on|off]|set <key> [value]]",
+      .. "status|trace [on|off]|dump|set <key> [value]]",
     summary = "Automatic speedwalk stepping with optional combat",
     description = "Walks a stored step path one room at a time, optionally "
       .. "attacking on the way. Or, with 'explore [area]', maps an "
@@ -1321,7 +1423,11 @@ local function register_command()
       .. "speedwalks discard the map; wait for already queued moves to finish before restarting. "
       .. "'status' shows farm on/off, level, difficulty, restart and wait state, "
       .. "attack settings and frontier travel progress. 'set config' also shows farm settings. "
-      .. "Use 'trace on' to inspect arrivals and combat decisions. Stop an active "
+      .. "Use 'trace on' to inspect arrivals and combat decisions. A room entry the "
+      .. "stepper did not send for (wimpy, a mob moving you, a direction typed by hand) "
+      .. "drops the explore map, and a running explore stops. A run ending with no "
+      .. "unvisited exits saves a map dump in the profile's autostepper.json "
+      .. "(explore_dumps, last 5); 'dump' saves one on demand. Stop an active "
       .. "run before starting another. The shorthands are '-.' to start/resume "
       .. "on any mob, '->' to start/resume on targets only, "
       .. "'-!' to stop, and '-' for help. Settings: status, config, attack, "
@@ -1436,9 +1542,14 @@ function M.on_unload()
   log("Unloaded", COLOR_RUN)
 end
 
--- A disconnected run cannot confirm any pending move or fight.
+-- A disconnected run cannot confirm any pending move or fight. Nor is a move
+-- sent before the drop held for its entry, as an ordinary stop holds it:
+-- across the connection boundary nobody knows whether it was delivered, so an
+-- entry after it is unasked and drops the map instead of committing that move.
 function M.on_disconnect()
   M.stop()
+  cancel_in_flight()
+  if explore and explore.drop_in_flight then explore.drop_in_flight() end
 end
 
 -- A re-dive invalidates a retained map. Pause/resume keeps the map across a
@@ -1481,16 +1592,51 @@ local function check_instance_reset(text)
   end
 end
 
+-- A direction typed mid-run lands while the stepper is awaiting its own
+-- entry, so on_room_contents_frame() would take it as the step's arrival and
+-- file the room one move off. It is caught here instead, as it is typed:
+-- on_input sees what the player (or an alias) enters, never the stepper's own
+-- mud.send(). Typed while paused it is caught here too, before the entry could
+-- settle a direction the stop was still holding.
+local HAND_MOVES = {}
+for _, dir in ipairs({ "n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d",
+    "north", "south", "east", "west", "northeast", "northwest", "southeast",
+    "southwest", "up", "down" }) do
+  HAND_MOVES[dir] = true
+end
+
+-- how: "by hand" from on_input, "by a script" from on_send -- a move an alias
+-- or trigger sends with mud.send() never passes on_input, and lands exactly
+-- as a typed one does.
+local function check_hand_move(text, how)
+  if type(text) ~= "string" then return end
+  if not (explore and explore.holds_rooms and explore.holds_rooms()) then return end
+  for part in text:gmatch("[^;]+") do
+    local word = part:match("^%s*(.-)%s*$"):lower()
+    if HAND_MOVES[word] then
+      if enabled and run_mode == "explore" then
+        log("Moved " .. how .. " (\"" .. word .. "\"); stopping", COLOR_WARN)
+        M.stop()
+      end
+      cancel_in_flight()
+      explore.reset("moved " .. how .. "; position unknown")
+      return
+    end
+  end
+end
+
 -- Both are filter hooks and must return their text unchanged -- returning nil
 -- or false here would silently eat the very command (setsea, unsetsea, enter
 -- sea) the player or a script just issued.
 function M.on_input(text)
   check_instance_reset(text)
+  check_hand_move(text, "by hand")
   return text
 end
 
 function M.on_send(text)
   check_instance_reset(text)
+  if not own_sending then check_hand_move(text, "by a script") end
   return text
 end
 
@@ -1561,6 +1707,7 @@ function M.start(targets_only, from_entry)
   end
 
   cancel_farm_restart()
+  cancel_in_flight()
   enabled = true
   route_commands = {}
   state = "idle"
@@ -1589,6 +1736,13 @@ function M.stop()
   if enabled then
     log("Stopped", COLOR_RUN)
   end
+  -- A single explore move sent and still inside its arrival window. Not after
+  -- the watchdog (arrival_timer is gone by then: it stops "at the last
+  -- confirmed position"), and not a frontier speedwalk, discarded below.
+  local hold = enabled and run_mode == "explore" and state == "stepping"
+    and arrival_kind == "move" and arrival_timer ~= nil
+    and not (step_dispatch and step_dispatch.explore_batch)
+  cancel_in_flight()
   cancel_arrival()
   cancel_refresh_wait()
   enabled = false
@@ -1610,7 +1764,15 @@ function M.stop()
   -- checks the CURRENT room against the area before letting a resume
   -- through. Pausing keeps the map and profile so that check has something
   -- to resume back into.
-  if explore and explore.active() and explore.stop then explore.stop() end
+  if explore and explore.active() and explore.stop then
+    explore.stop(hold)
+    if hold and explore.in_flight and explore.in_flight() then
+      in_flight_timer = timer.after(ARRIVAL_TIMEOUT_MS, function()
+        in_flight_timer = nil
+        if explore.in_flight() then explore.drop_in_flight() end
+      end)
+    end
+  end
 end
 
 function M.explore_start(area_name)
@@ -1669,7 +1831,7 @@ restart_chaossea = function()
   local commands = prof.restart({ level = level, difficulty = difficulty })
   local setup_sent = true
   for _, cmd in ipairs(commands) do
-    if mud.send(cmd) == false then setup_sent = false end
+    if own_send(cmd) == false then setup_sent = false end
   end
   log(string.format("Chaos Sea setup sent (level %d, %s)", level, difficulty), COLOR_RUN)
   if setup_sent then

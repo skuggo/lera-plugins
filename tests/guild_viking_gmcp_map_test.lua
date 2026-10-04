@@ -208,6 +208,27 @@ map_frame({
 check("landmarks replace the previous list", #S.vmap_pois == 2)
 check("two landmarks on one cell keep the first", S.vmap_pois[2].name == "Beta")
 
+-- The server namespace delta cache omits unchanged revision/count metadata
+-- after the first chunk. The receiver must retain those values while joining
+-- later chunk-only deltas rather than treating each slice as a whole list.
+S.vmap_landmark_rev = nil
+S.vmap_landmark_chunks = 0
+S.vmap_landmark_parts = {}
+S.vmap_landmark_received = 0
+map_frame({ landmark_rev = 7, landmark_chunk = 1, landmark_chunks = 3,
+  landmarks = { { type = "player", name = "First", x = 1, y = 1, owner = "a" } } })
+check("partial landmark snapshot keeps previous list until complete",
+  #S.vmap_pois == 2)
+map_frame({ landmark_chunk = 2,
+  landmarks = { { type = "player", name = "Second", x = 2, y = 2, owner = "b" } } })
+check("chunk-only delta does not discard the pending snapshot",
+  #S.vmap_pois == 2 and S.vmap_landmark_received == 2)
+map_frame({ landmark_chunk = 3,
+  landmarks = { { type = "seer", name = "Third", x = 3, y = 3, owner = "" } } })
+check("landmark chunks publish as one complete POI list",
+  #S.vmap_pois == 3 and S.vmap_pois[1].name == "First"
+  and S.vmap_pois[2].name == "Second" and S.vmap_pois[3].name == "Third")
+
 -- A packed push. `enc` names the encoding per plane and `legend` explains the
 -- codes; both are cached, so the delta that follows can ship planes alone.
 map_frame({

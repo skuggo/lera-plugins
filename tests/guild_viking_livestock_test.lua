@@ -166,9 +166,90 @@ check("management cap overrides mirrored tier", compact:find("9/20", 1, true) ~=
 check("fractional herd stats and generation visible", compact:find("H:50.01", 1, true)
   and compact:find("Gen:8.25", 1, true))
 check("fractional age visible", compact:find("Age:40.50", 1, true) ~= nil)
-check("concise pen safety metadata visible", compact:find("Penfree:9  pending:2  protected:9  auto-cull:off", 1, true) ~= nil)
+check("concise pen safety metadata visible", compact:find("Penfree:9  Pending:2  Protected:9  Auto-cull:off", 1, true) ~= nil)
 for _, line in ipairs(page.lines(40)) do
   check("compact page stays within narrow width", #(line:gsub("\027%[[%d;]*m", "")) <= 40)
+end
+
+-- ---- Market columns --------------------------------------------------------
+-- A breed name wider than its column used to shove every field after it along
+-- the row ("Icelandic Settlement" is 20 characters against a 14-wide column),
+-- so a market listing under one hold did not line up with the listing under
+-- the next. The columns are sized to the widest value actually shown, and
+-- every row is padded AND truncated to them.
+do
+  local w = require("handlers.livestock")._gmcp
+  S.lmarket = {}
+  w.LMARKET({
+    lmarket_8 = {
+      { lin = 8, idx = 0, species = "horse", breed = "fjord", count = 3,
+        price = 2577, hard = 61, fert = 6, yield = 30, vigor = 56, con = 54 },
+      { lin = 8, idx = 1, species = "cattle", breed = "icelandic_cattle", count = 1,
+        price = 560, hard = 58, fert = 25, yield = 43, vigor = 66, con = 50 },
+      { lin = 8, idx = 2, species = "cattle", breed = "icelandic_cattle", count = 3,
+        price = 1479, hard = 44, fert = 40, yield = 69, vigor = 45, con = 38 },
+    },
+  })
+  page_opts.set("show_stock_market", true)
+
+  local rows = {}
+  for _, line in ipairs(page.lines(120)) do
+    local flat = (line:gsub("\027%[[%d;]*m", ""))
+    if flat:match("^#%d") then rows[#rows + 1] = flat end
+  end
+  check("every market listing renders a row", #rows == 3, #rows)
+
+  -- The count field is the one right after the breed: if the wide breed still
+  -- pushed, these would not agree.
+  local at = {}
+  for i, row in ipairs(rows) do at[i] = row:find("x%d") end
+  check("the count column starts at the same place on every row",
+        at[1] and at[1] == at[2] and at[2] == at[3], table.concat({tostring(at[1]),
+        tostring(at[2]), tostring(at[3])}, "/"))
+
+  -- Prices stack on their digits rather than their first character, so a
+  -- four-digit price does not shift a three-digit one.
+  local ends = {}
+  for i, row in ipairs(rows) do ends[i] = select(2, row:find("%d+d")) end
+  check("prices right-align on the same column",
+        ends[1] and ends[1] == ends[2] and ends[2] == ends[3],
+        table.concat({tostring(ends[1]), tostring(ends[2]), tostring(ends[3])}, "/"))
+
+  check("the wide breed is not cut off",
+        table.concat(rows, "\n"):find("Icelandic Settlement", 1, true) ~= nil,
+        rows[2])
+
+  for _, line in ipairs(page.lines(80)) do
+    check("market row stays inside the page width: " .. line:sub(1, 12),
+          #(line:gsub("\027%[[%d;]*m", "")) <= 80)
+  end
+end
+
+-- ---- Management row colours ------------------------------------------------
+-- Penfree/Pending/Protected/Auto-cull is a row of numbers you act on, and it
+-- rendered as one undifferentiated grey run. A pen with NO free space is the
+-- state that silently stops a herd growing, so it is the one called out.
+do
+  -- free must equal cap - head - pending or the handler rejects the record.
+  require("handlers.livestock")._gmcp.HERDS({ { bldg = "byre", head = 17,
+    management = "20;3;0;0;0;0;4050;825;5001,5025,5100,5200,5300,5400" } })
+  local line
+  for _, l in ipairs(page.lines(120)) do
+    if l:find("Penfree", 1, true) then line = l end
+  end
+  check("the management row is rendered", line ~= nil)
+  if line then
+    check("a full pen is called out in red",
+          line:find("\027%[91mPenfree") == nil
+          and line:find("Penfree:\027%[0m\027%[91m0") ~= nil, line)
+    check("counts above zero are coloured, not dim",
+          line:find("\027%[36m3") ~= nil, line)
+    check("a zero count stays dim", line:find("\027%[90m0") ~= nil, line)
+    check("the labels themselves stay dim", line:find("\027%[90mPending:") ~= nil, line)
+    check("and the labels are in proper case",
+          line:find("Pending:", 1, true) and line:find("Protected:", 1, true)
+          and line:find("Auto-cull:", 1, true) and line:find("pending:", 1, true) == nil, line)
+  end
 end
 
 if failures > 0 then

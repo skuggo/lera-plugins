@@ -104,9 +104,12 @@ local pagelib = require("pagelib")
 local RESET = pagelib.RESET
 local REV_ON = "\27[7m"
 local REV_OFF = "\27[27m"
+local image_row_limit = 2
+local measured_rows = 0
+
 
 -- Every position/size fact both render() and geometry() need, computed once.
-local function layout(grid, opts)
+local function layout(grid, opts, available_width)
   local w, h = grid.w or 0, grid.h or 0
   local row_headers = opts.row_headers and true or false
   local col_headers = opts.col_headers and true or false
@@ -134,11 +137,32 @@ local function layout(grid, opts)
   local glyph_width = compact and 1 or 2
   local pitch = compact and 1 or 3
 
+  local prefix_width = row_headers and (row_header_width + 1) or 0
+  local image_mode, image_height = false, 1
+  if grid.image and w > 0 then
+    local budget = math.floor(((available_width or (prefix_width + w * 4)) - prefix_width) / w)
+    local cell_aspect = require("tiles").cell_aspect()
+    -- Choose a compact square in character-cell units, at most two rows.
+    -- A wide board must not silently disable the user's PNG preference.
+    -- Keep the minimum tile size and clip at the viewport instead.
+    image_mode, pitch, glyph_width = true, 2, 2
+    local max_cols = math.max(2, math.min(budget, grid.image_max_cols or 4))
+    local min_cols = math.min(max_cols, math.max(2, opts.image_min_cols or 2))
+    for rows = 1, image_row_limit do
+      local cols = opts.image_cols or math.max(min_cols,
+        math.floor(rows * cell_aspect + 0.5))
+      if cols <= max_cols then
+        image_mode, pitch, glyph_width, image_height = true, cols, cols, rows
+      end
+    end
+    compact = true
+  end
+
   local edge_rows = (not compact) and opts.south_edge ~= nil
   local body_lines_per_row = edge_rows and 2 or 1
+  if image_mode then body_lines_per_row = image_height end
   local col_header_lines = col_headers and 1 or 0
 
-  local prefix_width = row_headers and (row_header_width + 1) or 0
   local body_width = w * pitch
   local total_width = prefix_width + body_width
   local total_height = col_header_lines + h * body_lines_per_row
@@ -153,6 +177,8 @@ local function layout(grid, opts)
     compact = compact,
     glyph_width = glyph_width,
     pitch = pitch,
+    image_mode = image_mode,
+    image_height = image_height,
     edge_rows = edge_rows,
     body_lines_per_row = body_lines_per_row,
     col_header_lines = col_header_lines,
@@ -209,21 +235,26 @@ local function build_header_line(L)
     parts[#parts + 1] = " "
   end
   for c = 0, L.w - 1 do
-    parts[#parts + 1] = pagelib.trunc(L.col_label(c), L.glyph_width)
+    local label = tostring(L.col_label(c))
+    -- At minimum zoom show alternate coordinates instead of "01020304".
+    local stride = L.image_mode and math.ceil((#label + 1) / L.pitch) or 1
+    parts[#parts + 1] = pagelib.trunc(c % stride == 0 and label or "", L.glyph_width)
     if not L.compact then parts[#parts + 1] = " " end
   end
   return table.concat(parts)
 end
 
-local function build_cell_line(L, r)
+local function build_cell_line(L, r, subrow)
+  subrow = subrow or 0
   local parts = {}
   if L.row_headers then
-    parts[#parts + 1] = pagelib.trunc(L.row_label(r), L.row_header_width)
+    parts[#parts + 1] = pagelib.trunc(subrow == 0 and L.row_label(r) or "", L.row_header_width)
     parts[#parts + 1] = " "
   end
   local grid = L.grid
   for c = 0, L.w - 1 do
-    parts[#parts + 1] = glyph_field(grid.cell(c, r), L.glyph_width)
+    local cell = grid.cell(c, r)
+    parts[#parts + 1] = glyph_field(cell, L.glyph_width)
     if not L.compact then
       local has_edge = L.east_edge and L.east_edge(c, r)
       parts[#parts + 1] = has_edge and "|" or " "
@@ -256,7 +287,7 @@ local function cell_at(L, x, y)
   local group = math.floor(gy / L.body_lines_per_row)
   if group < 0 or group >= L.h then return nil end
   local line_in_group = gy % L.body_lines_per_row
-  if line_in_group ~= 0 then return nil end -- an edge row: no cells
+  if line_in_group ~= 0 and not L.image_mode then return nil end
   local r = group
 
   local bx
@@ -279,9 +310,36 @@ end
 
 local maplib = {}
 
-function maplib.render(grid, opts)
+-- Scope sizing to one render/pointer pass; other panes and remote viewers
+-- must not change the geometry of an already painted local map.
+function maplib.with_limit(limit, build)
+  local previous = image_row_limit
+  image_row_limit = limit
+  local ok, a, b, c = pcall(build)
+  image_row_limit = previous
+  if not ok then error(a, 0) end
+  return a, b, c
+end
+
+function maplib.fit(height, build, forced_limit)
+  if forced_limit then
+    local limit = math.max(1, math.min(image_row_limit, forced_limit))
+    local a, b, c = maplib.with_limit(limit, build)
+    return a, b, c, limit
+  end
+  measured_rows = 0
+  local a, b, c = maplib.with_limit(1, build)
+  local rows = measured_rows
+  local limit = rows > 0 and math.max(1, math.min(2,
+    math.floor(1 + (height - #a) / rows))) or 1
+  if limit > 1 then a, b, c = maplib.with_limit(limit, build) end
+  return a, b, c, limit
+end
+
+function maplib.render(grid, opts, available_width)
   opts = opts or {}
-  local L = layout(grid, opts)
+  local L = layout(grid, opts, available_width)
+  if L.image_mode then measured_rows = measured_rows + L.h end
   local lines = {}
 
   if L.col_headers then
@@ -289,6 +347,11 @@ function maplib.render(grid, opts)
   end
   for r = 0, L.h - 1 do
     lines[#lines + 1] = build_cell_line(L, r)
+    if L.image_mode then
+      for subrow = 1, L.body_lines_per_row - 1 do
+        lines[#lines + 1] = build_cell_line(L, r, subrow)
+      end
+    end
     if L.edge_rows then
       lines[#lines + 1] = build_edge_line(L, r)
     end
@@ -297,10 +360,57 @@ function maplib.render(grid, opts)
   return lines
 end
 
-function maplib.geometry(grid, opts)
+function maplib.geometry(grid, opts, available_width)
   opts = opts or {}
-  local L = layout(grid, opts)
+  local L = layout(grid, opts, available_width)
+  local images = {}
+  if L.image_mode then
+    for r = 0, L.h - 1 do
+      for c = 0, L.w - 1 do
+        local path, overlay = grid.image(c, r)
+        -- Until the host supports text over PNGs, selection uses its
+        -- reverse-video glyph in place, never an extra row between tiles.
+        local cell = grid.cell(c, r)
+        if cell and cell.sel then path = nil end
+        -- The GROUND is drawn whenever the grid can name it, even when there is
+        -- no marker to put on top -- `path` being nil is not a reason to leave
+        -- a hole. Two cases reach here with path == nil on a tiled board and
+        -- both showed the renderer's black clear colour before:
+        --   * the SELECTED cell, blanked two lines above so its reverse-video
+        --     glyph can be read -- which on a tiled board meant a black square
+        --     following your own host around the campaign map;
+        --   * a cell whose overlay id the board does not recognise. The
+        --     campaign grid returns nil for anything that is not host/ally/
+        --     foe/objective/landmark, and a detachment marker is exactly that.
+        local ground = grid.under and grid.under(c, r) or nil
+        if path or ground then
+          local x = L.prefix_width + c * L.pitch
+          local y = L.col_header_lines + r * L.body_lines_per_row
+          -- A unit marker is a marker, not a tile: it says WHO is standing
+          -- there, and the ground it stands on is the terrain underneath.
+          -- Markers are drawn with transparent backdrops, so the board emits
+          -- the terrain first and lets the marker composite over it -- which
+          -- is why grids flag their overlays and expose `under`.
+          -- Any image supplied by a terrain-backed grid is composited over
+          -- that terrain. Do not make correctness depend on each individual
+          -- marker remembering the overlay flag; transparent PNG pixels must
+          -- never expose the renderer's clear color.
+          -- Only when it differs from the marker: a grid whose own image IS
+          -- the terrain (every cell with no marker on it) would otherwise emit
+          -- that tile twice at the same spot -- two draws per empty cell, and
+          -- a geometry twice the size it should be.
+          if ground and ground ~= path then images[#images + 1] = {
+            x = x, y = y, w = L.pitch, h = L.image_height, path = ground,
+          } end
+          if path then images[#images + 1] = {
+            x = x, y = y, w = L.pitch, h = L.image_height, path = path,
+          } end
+        end
+      end
+    end
+  end
   return {
+    images = images,
     width = L.total_width,
     height = L.total_height,
     cell_at = function(x, y) return cell_at(L, x, y) end,

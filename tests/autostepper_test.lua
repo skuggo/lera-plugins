@@ -2075,6 +2075,7 @@ do
   check("split Room.Info/Contents filters new occupants", count_sent("kill ") == 2, table.concat(sent, "|"))
   quiet(as.stop)
   explore_state.active = false
+  real_explore.discard()  -- the case below is a route run, not a resume of that map
   cmd("clear")
   start_room({ "A gentle guide" })
   check("empty ignore retains ordinary attack behavior", count_sent("kill ") == 1)
@@ -2117,6 +2118,8 @@ do
   check("registry usage requires explicit farm settings",
     step_cmd.usage:find("chaossea farm <level> <difficulty>", 1, true)
       and not step_cmd.usage:find("chaossea [farm]", 1, true))
+  check("registry usage and description list the dump subcommand",
+    step_cmd.usage:find("|dump|", 1, true) and step_cmd.description:find("'dump'", 1, true))
 end
 
 if failures > 0 then

@@ -23,7 +23,12 @@ local function engine()
   local handlers, timers, triggers = {}, {}, {}
   local next_id = 0
   lera = { time = function() return E.now / 1000 end }
-  mud = { send = function(cmd) E.sent[#E.sent + 1] = cmd end }
+  -- Lera runs every mud.send() through the plugins' on_send hooks before it
+  -- returns; the stepper tells its own sends from anyone else's by that.
+  mud = { send = function(cmd)
+    E.sent[#E.sent + 1] = cmd
+    if E.as and E.as.on_send then E.as.on_send(cmd) end
+  end }
   buffer = { color_print = function(...)
     local parts = {}
     for i = 3, select("#", ...), 3 do parts[#parts + 1] = tostring(select(i, ...)) end
@@ -1085,6 +1090,7 @@ do
   local e = engine()
   e.begin({n = 0}, {})
   e.as.stop()
+  e.advance(5001)   -- past the in-flight window: the walk out is the player's, not the held n
   e.deliver("Room.Info", {num = 400, name = "Outside the Sea", exits = {n = 401}})
   e.contents({}, nil, true)
   e.routes = {{raw = "n", commands = {"n"}}}
@@ -1250,50 +1256,303 @@ do
     e.as.is_running() and e.mode.stats().rooms == 1 and e.pos() == "0,0,0")
 end
 
+local function count_logs(e, needle)
+  local n = 0
+  for _, l in ipairs(e.logs) do if l:find(needle, 1, true) then n = n + 1 end end
+  return n
+end
+
+-- A stop is almost always taken mid-step. The stepper's own move landing
+-- after it is still its own move: committed, not mistaken for one nobody sent.
 do
   local e = engine()
-  e.begin({n = 0, e = 0}, {})
+  e.begin({n = 0, s = 0}, {})
   e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  check("mid-step stop setup: second n in flight over a two-room map",
+    e.sent[2] == "n" and e.mode.stats().rooms == 2 and e.as.get_state() == "stepping")
   e.as.stop()
-  local rooms = e.mode.stats().rooms
-  e.info({n = 0, s = 0}); e.contents({}, nil, true)   -- walked by hand while paused
+  e.info({s = 0, e = 0}); e.contents({}, nil, true)   -- the stepper's own n lands
+  check("the stepper's own move landing after a stop is committed",
+    not e.as.is_running() and e.mode.stats().rooms == 3 and e.pos() == "0,2,0"
+      and count_logs(e, "map reset") == 0)
+  check("it is recorded with the exits of the room it landed in",
+    table.concat(e.mode.dump_lines(), "\n"):find("0,2,0: e* s.", 1, true) ~= nil)
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)   -- then walked by hand
   check("a move while paused drops the retained map",
-    rooms == 2 and e.mode.stats().rooms == 0 and not e.as.is_running())
+    e.mode.stats().rooms == 0 and not e.as.is_running())
+  for _ = 1, 5 do e.info({n = 0, s = 0}); e.contents({}, nil, true) end
+  check("walking on after the reset does not reset (and say so) again",
+    count_logs(e, "map reset") == 1)
+end
+
+-- Held for one arrival window only: an entry after it is not the stepper's.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.stop()
+  e.advance(5001)
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  check("an entry after the in-flight window drops the map",
+    e.mode.stats().rooms == 0 and count_logs(e, "moved without a step") == 1)
+end
+
+-- The watchdog stops "at the last confirmed position": nothing is held, and a
+-- late entry means the position is unknown.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.advance(5000)
+  check("watchdog setup: stopped on an unanswered entry",
+    not e.as.is_running() and count_logs(e, "Room entry went unanswered") == 1)
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  check("an entry after a watchdog stop drops the map", e.mode.stats().rooms == 0)
+end
+
+-- A resume waits on a refresh, which is never entry-marked. An entry landing
+-- in that wait was made before the refresh was answered; taken as the answer
+-- it would file the new room at the old coordinate.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.stop()
+  e.advance(5001)
+  e.command("explore")
+  check("resume setup: resumed a one-room map", e.as.is_running() and e.mode.stats().rooms == 1)
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  check("an entry while a resume awaits its refresh stops and drops the map",
+    not e.as.is_running() and e.mode.stats().rooms == 0
+      and count_logs(e, "Moved outside the stepper") == 1)
+end
+
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.stop()
+  e.command("explore")                 -- resumed before the held n landed
+  e.info({n = 0, s = 0}); e.contents({})
+  check("a resume drops a held move instead of committing it against the refresh",
+    e.as.is_running() and e.pos() == "0,0,0" and e.sent[#e.sent] == "n")
+end
+
+-- A direction typed mid-step lands while the stepper awaits its own entry and
+-- would be taken as its arrival; it is caught as it is typed.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.on_input("say north is that way")
+  e.as.on_input("look")
+  check("ordinary input does not touch the run", e.as.is_running() and e.mode.stats().rooms == 1)
+  e.as.on_input(" South ")
+  check("a direction typed mid-run stops it and drops the map",
+    not e.as.is_running() and e.mode.stats().rooms == 0
+      and count_logs(e, "Moved by hand (\"south\"); stopping") == 1)
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)   -- the stepper's n
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)   -- the typed s
+  check("the entries that follow a hand move change nothing more",
+    e.mode.stats().rooms == 0 and count_logs(e, "map reset") == 1)
+  e.command("explore"); e.info({n = 0, s = 0}); e.contents({})
+  check("the next explore maps afresh from where the player stands",
+    e.as.is_running() and e.mode.stats().rooms == 1 and e.pos() == "0,0,0")
+end
+
+-- Route runs are not explore runs: fleeing a route fight only drops a map an
+-- earlier explore run left behind, and the route carries on as before.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.stop(); e.advance(5001)
+  e.deliver("Room.Info", {num = 7, name = "A town square", exits = {n = 0}})
+  e.routes = {{raw = "n", commands = {"n"}}}
+  e.as.start(false); e.contents({"A growing mutant being"})
+  check("route setup: a route run fighting beside a retained explore map",
+    e.as.get_state() == "fighting" and e.sent[#e.sent] == "kill being"
+      and e.mode.stats().rooms == 1)
+  e.deliver("Room.Info", {num = 8, name = "A side street", exits = {s = 0}})
+  e.contents({}, nil, true)                         -- wimpy
+  check("fleeing a route fight drops the retained map without stopping the route",
+    e.as.is_running() and e.mode.stats().rooms == 0
+      and count_logs(e, "Moved outside the stepper") == 0)
+end
+
+do
+  local e = engine()
+  e.routes = {{raw = "n", commands = {"n"}}}
+  e.info({n = 0}); e.contents({"A growing mutant being"})
+  e.as.start(false); e.contents({"A growing mutant being"})
+  e.deliver("Char.Combat", {attacker = ""})
+  e.advance(3000)
+  e.contents({}, nil, true)
+  check("route: room entry during the combat refresh stops instead of using another room",
+    not e.as.is_running() and e.sent[#e.sent] == "kill being"
+      and count_logs(e, "Room changed during combat") == 1)
+end
+
+-- A map a reset left empty takes its layer from the room name: resuming it on
+-- layer two is not a "layer correction".
+do
+  local e = engine()
+  e.begin({}, {})
+  check("layer setup: a one-room map exhausted on layer one",
+    not e.as.is_running() and e.mode.stats().rooms == 1)
+  e.deliver("Room.Info", {num = 0, name = "Layer two of the Sea of Chaos", exits = {u = 0}})
+  e.contents({}, nil, true)                         -- walked down by hand
+  e.command("explore")
+  e.deliver("Room.Info", {num = 0, name = "Layer two of the Sea of Chaos", exits = {u = 0}})
+  e.contents({})
+  local s = e.mode.stats()
+  check("a reset map resumed on layer two starts there without a layer correction",
+    s.rooms == 1 and s.z == s.layer and s.layer_corrections == 0
+      and count_logs(e, "layer correction") == 0)
 end
 
 -- Exhaustion saves a report in the plugin store: the map with frontier marks,
 -- the room as the server last described it, and the history leading up to it
 -- -- trace lines included, though trace is off. Plugins get no io in Lera's
 -- sandbox, so the store is the only place it can go.
-do
-  local old_store = store
-  local saved = { ignored_monsters = { ["a kept mob"] = true } }
-  store = {
-    load = function() return true end,
-    get = function() return saved end,
-    set = function(d) saved = d; return true end,
-    save = function() return true end,
+local function fake_store(saved)
+  local s = { saved = saved, loads_ok = true, sets = 0 }
+  s.api = {
+    load = function() return s.loads_ok end,
+    get = function() if s.loads_ok then return s.saved end end,
+    set = function(d) s.saved = d; s.sets = s.sets + 1; return true end,
+    save = function() s.saves = (s.saves or 0) + 1; return s.saves_ok ~= false end,
     path = function() return "/profile/.storage" end,
   }
+  return s
+end
+
+do
+  local old_store = store
+  local fs = fake_store({ ignored_monsters = { ["a kept mob"] = true } })
+  store = fs.api
   local e = engine()
   e.begin({n = 0}, {})
   e.info({s = 0}); e.contents({}, nil, true)
-  local dumps = saved.explore_dumps or {}
-  local text = table.concat(dumps[#dumps] or {}, "\n")
-  check("exhaustion saves a dump",
-    not e.as.is_running() and #dumps == 1 and text:find("explore stopped: exhausted", 1, true) ~= nil)
+  local dumps = fs.saved.explore_dumps or {}
+  local text = dumps[#dumps] or ""
+  check("exhaustion saves a dump as one string",
+    not e.as.is_running() and #dumps == 1 and type(text) == "string"
+      and text:find("explore stopped: exhausted", 1, true) ~= nil)
   check("the dump lists every recorded room with its exits marked",
     text:find("0,0,0: n.", 1, true) ~= nil and text:find("0,1,0: s.", 1, true) ~= nil
       and text:find("rooms per layer: z0=2", 1, true) ~= nil)
   check("the dump carries the history, trace lines included with trace off",
     text:find("Explored: no unvisited exits remain", 1, true) ~= nil
       and text:find("trace: ", 1, true) ~= nil)
+  check("the history is stamped with wall-clock time",
+    text:find("\n%d%d:%d%d:%d%d Starting explore run") ~= nil)
   check("saving a dump keeps the mob-ignore list",
-    saved.ignored_monsters and saved.ignored_monsters["a kept mob"] == true)
-  for _ = 1, 6 do e.command("dump") end
-  check("/step dump adds reports and only the last five are kept",
-    #saved.explore_dumps == 5
-      and saved.explore_dumps[5][1]:find("requested with /step dump", 1, true) ~= nil)
+    fs.saved.ignored_monsters and fs.saved.ignored_monsters["a kept mob"] == true)
+
+  e.command("explore"); e.info({s = 0}); e.contents({})
+  check("re-exhausting the same map does not add another automatic dump",
+    not e.as.is_running() and #fs.saved.explore_dumps == 1
+      and count_logs(e, "Explored: no unvisited exits remain") == 2)
+
+  e.command("dump")
+  local frames_before = select(2, fs.saved.explore_dumps[2]:gsub("trace: frame #", ""))
+  for _ = 1, 3 do e.info({s = 0}); e.contents({}, nil, false) end
+  for _ = 1, 4 do e.command("dump") end
+  local newest = fs.saved.explore_dumps[5]
+  check("/step dump adds reports, and the oldest is the one dropped",
+    #fs.saved.explore_dumps == 5
+      and fs.saved.explore_dumps[1]:find("requested with /step dump", 1, true) ~= nil
+      and newest:find("requested with /step dump", 1, true) ~= nil)
+  check("frames seen while idle stay out of the history",
+    select(2, newest:gsub("trace: frame #", "")) == frames_before)
+  store = old_store
+end
+
+do
+  local old_store = store
+  local fs = fake_store({})
+  store = fs.api
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.command("dump")
+  check("a dump mid-run marks exits into unrecorded rooms",
+    (fs.saved.explore_dumps[1] or ""):find("0,0,0: n* s*", 1, true) ~= nil)
+  store = old_store
+end
+
+-- A store that did not load is never saved over: a file that merely failed to
+-- parse would lose its ignore list. The report goes to lera.log instead.
+do
+  local old_store = store
+  local fs = fake_store({ ignored_monsters = { ["a kept mob"] = true } })
+  fs.loads_ok = false
+  store = fs.api
+  local e = engine()
+  local logged = {}
+  lera.log = function(s) logged[#logged + 1] = s end
+  e.begin({n = 0}, {})
+  e.info({s = 0}); e.contents({}, nil, true)
+  check("an unloaded store is not written by an automatic dump",
+    fs.sets == 0 and fs.saved.explore_dumps == nil
+      and count_logs(e, "did not load") == 1)
+  local found = false
+  for _, l in ipairs(logged) do
+    if l:find("[autostepper dump]", 1, true) and l:find("explore stopped: exhausted", 1, true) then found = true end
+  end
+  check("the dump goes to lera.log instead", found)
+  store = old_store
+end
+
+
+
+-- A move sent by a script -- an alias or trigger calling mud.send("north") --
+-- never passes on_input, and lands while the stepper awaits its own entry
+-- exactly as a typed one does. on_send sees it; the stepper's own sends are
+-- told apart because they are made inside own_send().
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  check("the stepper's own sends through on_send do not stop the run",
+    e.as.is_running() and e.sent[1] == "n" and e.mode.stats().rooms == 1)
+  mud.send("north")
+  check("a direction sent by a script mid-run stops it and drops the map",
+    not e.as.is_running() and e.mode.stats().rooms == 0
+      and count_logs(e, "Moved by a script (\"north\"); stopping") == 1)
+end
+
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  mud.send("say onward")
+  check("a script's other sends do not touch the run",
+    e.as.is_running() and e.mode.stats().rooms == 2)
+end
+
+-- Across a disconnect nobody knows whether the move sent was delivered, so
+-- it is not held: an entry after it is not taken as that move.
+do
+  local e = engine()
+  e.begin({n = 0, s = 0}, {})
+  e.as.on_disconnect()
+  e.info({n = 0, s = 0}); e.contents({}, nil, true)
+  check("an entry after a disconnect is not committed as the move in flight",
+    not e.as.is_running() and e.mode.stats().rooms == 0)
+end
+
+-- A dump that failed to save is not "already dumped": re-exhausting the same
+-- map tries again.
+do
+  local old_store = store
+  local fs = fake_store({})
+  fs.saves_ok = false
+  store = fs.api
+  local e = engine()
+  e.begin({n = 0}, {})
+  e.info({s = 0}); e.contents({}, nil, true)
+  check("dump retry setup: the first save failed",
+    fs.saves == 1 and count_logs(e, "Could not save the explore dump") == 1)
+  fs.saves_ok = true
+  e.command("explore"); e.info({s = 0}); e.contents({})
+  check("re-exhausting the same map retries a dump that failed to save",
+    fs.saves == 2 and count_logs(e, "Map dump saved") == 1)
+  e.command("explore"); e.info({s = 0}); e.contents({})
+  check("once saved, the same map is not dumped again", fs.saves == 2)
   store = old_store
 end
 

@@ -466,15 +466,19 @@ send_calls = {}
 last_menu_open = nil
 local ok_down_same = map.on_pointer({ kind = "down", x = 0, y = 0, inside = true, button = "left" },
   fixed_ctx(0, 1))
-check("down on a non-POI cell does not consume",
-  ok_down_same == nil or ok_down_same == false)
+-- A left click is a travel gesture on ANY cell now, not only a POI: down
+-- records the target and consumes, up walks there. Task 5's POI-only menu is
+-- gone -- travel_to_cell() BFSes to whatever cell was clicked.
+check("down on any cell consumes, POI or not", ok_down_same == true, ok_down_same)
 map.on_pointer({ kind = "move", x = 0, y = 0, inside = true }, fixed_ctx(0, 1))
 local ok_up_same = map.on_pointer({ kind = "up", x = 0, y = 0, inside = true, button = "left" },
   fixed_ctx(0, 1))
-check("a subsequent up on the SAME non-POI cell does not consume either",
-  ok_up_same == nil or ok_up_same == false)
-check("down+move+up on a non-POI cell never sends anything", #send_calls == 0)
-check("down+move+up on a non-POI cell never opens the travel menu", last_menu_open == nil)
+check("a matching up on the same cell consumes and travels",
+  ok_up_same == true, ok_up_same)
+-- (0,1) is mountains in this fixture, so the BFS finds no route and the module
+-- says so instead of sending movement.
+check("an unreachable cell sends nothing", #send_calls == 0)
+check("no menu is opened either way -- travel is direct now", last_menu_open == nil)
 
 -- =============================================================================
 -- Task 5: POI travel menu -- item list and per-item conditions
@@ -503,17 +507,11 @@ send_calls, last_menu_open = {}, nil
 check("left down on the POI cell (2,0) consumes",
   map.on_pointer(poi_at_2_0, fixed_ctx(2, 0)) == true)
 check("down on a POI cell never sends", #send_calls == 0)
-map.on_pointer(up_at_2_0, fixed_ctx(2, 0))
-check("matching up opens the travel menu", last_menu_open ~= nil)
-check("travel menu title is 'Travel to...'",
-  last_menu_open and last_menu_open.title == "Travel to...", last_menu_open and last_menu_open.title)
-
-local items = last_menu_open and menu_item_values(last_menu_open) or {}
-check("menu excludes the POI with an invalid position (x = -1)", #items == 1, #items)
-check("menu's one item is asgard, labeled per viking_draw_poi_menu's format",
-  items[1] and items[1].label == "Cap  Travel to Asgard (2,0)", items[1] and items[1].label)
-check("menu item's value carries the POI record itself (for on_select's travel_to)",
-  items[1] and items[1].value and items[1].value.name == "asgard")
+check("matching up on it consumes",
+  map.on_pointer(up_at_2_0, fixed_ctx(2, 0)) == true)
+-- No menu at all: the click walks you there. The POI list and its
+-- "Cap  Travel to Asgard (2,0)" labels belonged to the menu this replaced.
+check("no travel menu is opened", last_menu_open == nil)
 
 -- =============================================================================
 -- Task 5: travel branch -- EXACT movement sends for a reachable target,
@@ -521,8 +519,6 @@ check("menu item's value carries the POI record itself (for on_select's travel_t
 -- pathfinding_test.lua's Case 1: (0,0) -> (2,0) on a clear row = exactly
 -- {"east", "east"}).
 -- =============================================================================
-send_calls = {}
-last_menu_open.on_select(items[1].value)
 check("reachable target: EXACTLY two sends, in order, 'east' then 'east'",
   #send_calls == 2 and send_calls[1] == "east" and send_calls[2] == "east",
   table.concat(send_calls, ","))
@@ -542,12 +538,8 @@ seed_vmap({
 send_calls, last_menu_open = {}, nil
 map.on_pointer(poi_at_2_0, fixed_ctx(2, 0))
 map.on_pointer(up_at_2_0, fixed_ctx(2, 0))
-check("unreachable target's menu still opens", last_menu_open ~= nil)
-local unreachable_items = last_menu_open and menu_item_values(last_menu_open) or {}
-check("unreachable target: exactly one item (helheim)", #unreachable_items == 1)
-send_calls = {}
-last_menu_open.on_select(unreachable_items[1].value)
 check("unreachable target: no passable route -> nothing sent", #send_calls == 0)
+check("unreachable target opens no menu either", last_menu_open == nil)
 
 -- Already-at-target: player standing on the POI's own cell -> #path == 0,
 -- still nothing sent (mirrors pathfinding_test.lua's Case 5).
@@ -562,12 +554,11 @@ seed_vmap({
 send_calls, last_menu_open = {}, nil
 map.on_pointer(poi_at_2_0, fixed_ctx(2, 0))
 map.on_pointer(up_at_2_0, fixed_ctx(2, 0))
-check("already-at-target: menu still opens (player position is known)", last_menu_open ~= nil)
-local already_items = last_menu_open and menu_item_values(last_menu_open) or {}
-check("already-at-target: exactly one item (asgard)", #already_items == 1)
-send_calls = {}
-last_menu_open.on_select(already_items[1].value)
+-- The explicit POI list lives on the page menu now (page_menu.lua calls
+-- map.open_poi_menu(), exercised further down); a click is the travel gesture,
+-- and clicking the cell you are standing on has nowhere to walk.
 check("already at target: #path == 0 -> nothing sent", #send_calls == 0)
+check("already at target: no menu from the click", last_menu_open == nil)
 
 -- =============================================================================
 -- Status messages: every silent early return in the travel flow says why
@@ -745,10 +736,13 @@ seed_vmap({
 send_calls, last_menu_open = {}, nil
 local ok_nonpoi_down = map.on_pointer({ kind = "down", x = 0, y = 0, inside = true, button = "left" },
   fixed_ctx(1, 0))
-check("down on a non-POI cell (1,0) does not consume", ok_nonpoi_down ~= true)
+-- (1,0) is plain and one step east of the player, so the click walks there:
+-- travel is not POI-gated any more.
+check("down on a non-POI cell (1,0) consumes", ok_nonpoi_down == true, ok_nonpoi_down)
 map.on_pointer({ kind = "up", x = 0, y = 0, inside = true, button = "left" }, fixed_ctx(1, 0))
-check("non-POI cell click never opens the menu", last_menu_open == nil)
-check("non-POI cell click never sends", #send_calls == 0)
+check("non-POI cell click still opens no menu", last_menu_open == nil)
+check("non-POI cell click walks one step east",
+  #send_calls == 1 and send_calls[1] == "east", table.concat(send_calls, ","))
 
 -- =============================================================================
 -- Task 5: fail-closed tracker case, driven directly at the module level
@@ -841,6 +835,22 @@ local ok_wired_oob = renderer.on_pointer({ kind = "down", x = 0, y = 1000, insid
 check("an out-of-grid wrapper coordinate does not send to the MUD", #send_calls == 0)
 
 if is_open_flag then package.loaded["wm"].popup.close() end
+
+seed_vmap({ w = 2, h = 1, px = 0, py = 0, rows = { "pp" },
+  pois = { { type = "player", name = "LongSettlementName", owner = "Sigetest", x = 0, y = 0 } } })
+local before_hover = map.lines(24)
+map.on_pointer({ kind = "move", x = 0, y = 0, inside = true }, fixed_ctx(0, 0))
+local full_hover = map.lines(24)
+local all_details = table.concat(full_hover, " ")
+check("own-position hover retains settlement name", all_details:find("LongSettlementName", 1, true))
+check("own-position hover retains owner", all_details:find("Owner: Sigetest", 1, true))
+check("own-position hover also identifies player", all_details:find("You are here", 1, true))
+check("hover does not change reserved map height", #before_hover == #full_hover)
+local details = require("popups.hover_details")
+local long_name = "ExtremelyLongUnbrokenSettlementOwner"
+local wrapped = details.wrap(long_name, 8)
+check("long unbroken names wrap without data loss", table.concat(wrapped) == long_name)
+for _, line in ipairs(wrapped) do check("wrapped detail fits width", #line <= 8) end
 
 if failures > 0 then os.exit(1) end
 print("ALL GUILD_VIKING POPUP MAP TESTS PASSED")

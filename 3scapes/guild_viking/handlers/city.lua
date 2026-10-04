@@ -428,6 +428,9 @@ local function write_dcycle(rec)
   S.demand_cycle_in = tonumber(rec.secs) or 0
 end
 
+-- -1 from the server means "no production tick has ever run", which is a
+-- different thing from 0 ("due now") and from the key being absent. Kept as
+-- -1 so the page can say which -- see production_lines in pages/city.lua.
 local function write_nexttick(v)
   S.next_tick_in = tonumber(v) or 0
 end

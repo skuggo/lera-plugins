@@ -240,26 +240,13 @@ local function write_staff(parts)
   if parts.staff_total ~= nil then S.staff_total = tonumber(parts.staff_total) or 0 end
   if parts.staff_slices ~= nil then S.staff_slices = tonumber(parts.staff_slices) or 0 end
 
-  S.staff_by_slice = S.staff_by_slice or {}
-  local carried = false
-  for i = 0, 7 do
-    local slice = parts["staff_" .. i]
-    if type(slice) == "table" then
-      S.staff_by_slice[i] = slice
-      carried = true
-    end
-  end
-  if not carried then return end
-
-  -- Drop slices past the current count: a roster that shrank must not leave a
-  -- stale tail behind.
-  for i in pairs(S.staff_by_slice) do
-    if i >= (S.staff_slices or 0) then S.staff_by_slice[i] = nil end
-  end
+  S.staff_parts = S.staff_parts or {}
+  if not util.merge_roster(S.staff_parts, parts, "staff") then return end
+  local records = util.roster_records(S.staff_parts, S.staff_total or 0, S.staff_slices or 0)
 
   S.staff_list = {}
-  for i = 0, (S.staff_slices or 0) - 1 do
-    for _, r in ipairs(S.staff_by_slice[i] or {}) do
+  do
+    for _, r in ipairs(records) do
       if #S.staff_list >= 80 then break end
       if type(r) == "table" then
         local stats = {}

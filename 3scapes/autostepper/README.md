@@ -49,17 +49,27 @@ starts a fresh map in the current sea. After the cask/portal room is cleared, fa
 opens the cask, enters the portal, unsets the old sea, creates the configured sea,
 and enters it. Only this automatic restart sends the setup commands.
 
-Position in the sea is dead reckoned, so any room entry the stepper did not send
-for -- wimpy, a mob moving you, a direction typed by hand mid-run or while paused --
-drops the map. A running explore stops with "Moved outside the stepper"; the next
-`/step explore` maps afresh from where you stand.
+Position in the sea is dead reckoned, so a move the stepper did not send drops
+the map, and the next `/step explore` maps afresh from where you stand:
+
+- A direction you type, or an alias or trigger sends, while exploring stops the
+  run ("Moved by hand" / "Moved by a script").
+- Any other room entry outside a step -- wimpy, a mob moving you, a move while
+  paused -- stops a running explore with "Moved outside the stepper". During a
+  route run it only drops a retained explore map; the route carries on.
+- Stopping mid-step (`-!`) keeps the move already sent: if it lands within the
+  five-second arrival window it is committed, and the paused map stays good.
+  A disconnect does not keep it: whether it was delivered is unknown.
 
 When exploring ends "no unvisited exits remain", the stepper saves a report in
 the profile's `.storage/autostepper.json` under `explore_dumps` (last 5, newest
-last): position and counters, the room you stand in as the server reports it
-and as the map holds it, every recorded room with its exits (`*` marks an exit
-into a coordinate never recorded), and the last 120 log/trace lines, kept even
-with trace off. `/step dump` saves one on demand.
+last, each one string): position and counters, the room you stand in as the
+server reports it and as the map holds it, every recorded room with its exits
+(`*` marks an exit into a coordinate never recorded), and the last 120 log lines
+with the running run's trace lines, kept even with trace off. Re-exhausting the
+same map does not save another. `/step dump` saves one on demand. If
+`autostepper.json` does not load (missing or unreadable), it is left untouched
+and the report goes to `lera.log` instead.
 
 `/step chaossea farm off` disables repeats and cancels a pending restart without
 interrupting the current exploration or fight. `-!`, `/step stop` and `/step explore off`

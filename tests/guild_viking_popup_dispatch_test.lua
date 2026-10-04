@@ -195,7 +195,11 @@ local function seed_battle(t)
                                 uid = u.uid or 0, cost = u.cost or 0,
                                 leader = u.leader or "" }
     else
-      units[#units + 1] = { side = u.side or "Y", label = u.label or "",
+      -- The wire's own word, as battle.h sends it: "you" for your companies.
+      -- The scenarios still say "Y"/"N" (MIP's old spelling), which the
+      -- handler now rightly reads as the foe's.
+      local side = (u.side == nil or u.side == "Y" or u.side == "you") and "you" or "foe"
+      units[#units + 1] = { side = side, label = u.label or "",
                             size = u.size or 0, coord = u.coord or "",
                             morale = u.morale or 0, type = u.utype or "",
                             leader = u.leader or "", bid = u.bid or 0,
@@ -277,34 +281,23 @@ local function to_screen(root_w, root_h, lx, ly)
   return x + 1 + lx, y + 1 + ly
 end
 
--- Grid column -> wrapper-local x, for to_screen. None of the three boards
--- exercised here passes col_headers/row_headers, so each grid's body starts
--- at wrapper-local column 0 with no header offset to add -- only the pitch
--- differs, and the two boards' pitches are NOT interchangeable:
---
---   wide_lx    -- war_campaign, maplib's default 3-column pitch (2-char
---                 glyph slot + one east-edge slot). Clicking anywhere in the
---                 glyph's own 2 columns hits the cell (this uses the first);
---                 the 3rd column is the edge slot and hit-tests to nil.
---   compact_lx -- war_battle and the territory map, which render with
---                 maplib's `compact`: a 1-column pitch, so the grid column
---                 IS the x. Every column is a cell; there is no edge slot.
--- Both boards carry coordinate axes now (maplib col_headers/row_headers), so
--- every cell has moved: one line down for the column header, and GRID_GUTTER
--- columns right for the row label plus its separator. The boards used in
--- these scenarios are small enough that the label is one character wide.
---
--- Folded into these helpers rather than into each call site, so a scenario
--- still reads as "cell (1,0)" rather than as arithmetic.
-local GRID_HEADER_LINES = 1
-local GRID_GUTTER = 2
-local function wide_lx(gc) return GRID_GUTTER + gc * 3 end
-local function compact_lx(gc) return GRID_GUTTER + gc end
-local function grid_y(off, gr) return off + GRID_HEADER_LINES + gr end
--- The MAP popup has no axes -- only the two war boards gained them -- so its
--- scenarios keep the original, un-shifted geometry.
-local function map_lx(gc) return gc end
-local function map_wx(gc) return gc * 3 end
+-- Screen position of grid cell (c, r) on board module `mod`, asked of the
+-- board's OWN geometry (cell_at) rather than computed from an assumed pitch
+-- and header layout. The boards grew column/row headers (letters and 1-based
+-- row numbers), which shifted every cell right and down; coordinates worked
+-- out by hand broke silently, and a click landed on a header instead.
+local function cell_screen(root_w, root_h, mod, inner_w, c, r)
+  local geom = mod.geometry(inner_w)
+  local off = mod.grid_line_offset(inner_w)
+  for ly = 0, (geom.height or 60) - 1 do
+    for lx = 0, (geom.width or inner_w) - 1 do
+      local gc, gr = geom.cell_at(lx, ly)
+      if gc == c and gr == r then return to_screen(root_w, root_h, lx, off + ly) end
+    end
+  end
+  error(string.format("cell %d,%d not found on the board", c, r))
+end
+
 
 -- =============================================================================
 -- Scenario A (Critical #1 RED before the fix): campaign select-own-stack,
@@ -334,7 +327,7 @@ do
   local off = war_campaign.grid_line_offset(inner_w)
 
   -- Down+up on (0,0) -- the host's own cell -- selects it.
-  local dcol, drow = to_screen(root_w, root_h, wide_lx(0), grid_y(off, 0))
+  local dcol, drow = cell_screen(root_w, root_h, war_campaign, inner_w, 0, 0)
   send_calls = {}
   check("a REAL down on the host's own cell consumes",
     real_popup.handle_pointer({ kind = "down", button = "left", x = dcol, y = drow }) == true)
@@ -345,7 +338,7 @@ do
     find_plain(war_campaign.lines(inner_w), "Selected A"))
 
   -- Queue a waypoint at grid (1,1) ("B2") via a second real down+up pair.
-  local qcol, qrow = to_screen(root_w, root_h, wide_lx(1), grid_y(off, 1))
+  local qcol, qrow = cell_screen(root_w, root_h, war_campaign, inner_w, 1, 1)
   send_calls = {}
   real_popup.handle_pointer({ kind = "down", button = "left", x = qcol, y = qrow })
   real_popup.handle_pointer({ kind = "up", button = "left", x = qcol, y = qrow })
@@ -431,7 +424,7 @@ do
   local off = war_battle.grid_line_offset(inner_w)
 
   -- Select the own unit at A1 (gc=0, gr=1) via a real matched down+up pair.
-  local scol, srow = to_screen(root_w, root_h, compact_lx(0), grid_y(off, 1))
+  local scol, srow = cell_screen(root_w, root_h, war_battle, inner_w, 0, 1)
   send_calls = {}
   real_popup.handle_pointer({ kind = "down", button = "left", x = scol, y = srow })
   real_popup.handle_pointer({ kind = "up", button = "left", x = scol, y = srow })
@@ -446,7 +439,7 @@ do
   check("down on the real [Actions] row opens the turn-phase menu",
     last_menu_open ~= nil and menu_has_label(last_menu_open, "Advance Turn"))
 
-  local ecol, erow = to_screen(root_w, root_h, compact_lx(1), grid_y(off, 0))
+  local ecol, erow = cell_screen(root_w, root_h, war_battle, inner_w, 1, 0)
   send_calls = {}
   real_popup.handle_pointer({ kind = "up", button = "left", x = ecol, y = erow })
   check("releasing over the enemy cell after an [Actions] down sends NOTHING",
@@ -503,7 +496,7 @@ do
   local _, _, bw = box_geometry(root_w, root_h)
   local inner_w = bw - 2
   local off_c = war_campaign.grid_line_offset(inner_w)
-  local scol, srow = to_screen(root_w, root_h, wide_lx(0), grid_y(off_c, 0))
+  local scol, srow = cell_screen(root_w, root_h, war_campaign, inner_w, 0, 0)
 
   -- war_campaign.selected/queue are module-local singletons that persist
   -- across scenarios by design (see war_campaign.lua's own M.reset() doc
@@ -545,7 +538,7 @@ do
 
   -- Real down on the battle's own unit (gc=0, gr=1, "A1") -- consumed by
   -- war_battle, pinning this gesture to it.
-  local dcol, drow = to_screen(root_w, root_h, compact_lx(0), grid_y(off_b, 1))
+  local dcol, drow = cell_screen(root_w, root_h, war_battle, inner_w, 0, 1)
   send_calls = {}
   check("a REAL down on the battle unit consumes (war_battle, battle takes priority)",
     real_popup.handle_pointer({ kind = "down", button = "left", x = dcol, y = drow }) == true)
@@ -607,13 +600,13 @@ do
 
   -- Select the own unit, then order it to the enemy cell -- both as real
   -- matched down+up pairs, with S.battle untouched throughout.
-  local scol, srow = to_screen(root_w, root_h, compact_lx(0), grid_y(off, 1))
+  local scol, srow = cell_screen(root_w, root_h, war_battle, inner_w, 0, 1)
   send_calls = {}
   real_popup.handle_pointer({ kind = "down", button = "left", x = scol, y = srow })
   real_popup.handle_pointer({ kind = "up", button = "left", x = scol, y = srow })
   check("positive control: selecting the own unit never sends", #send_calls == 0)
 
-  local ecol, erow = to_screen(root_w, root_h, compact_lx(1), grid_y(off, 0))
+  local ecol, erow = cell_screen(root_w, root_h, war_battle, inner_w, 1, 0)
   real_popup.handle_pointer({ kind = "down", button = "left", x = ecol, y = erow })
   real_popup.handle_pointer({ kind = "up", button = "left", x = ecol, y = erow })
   check("positive control: ordering the unit sends the exact command with no mode flip in play",
@@ -653,7 +646,7 @@ do
   local inner_w = bw - 2
 
   local off = map.grid_line_offset(inner_w)
-  local pcol, prow = to_screen(root_w, root_h, map_lx(2), off + 0)
+  local pcol, prow = cell_screen(root_w, root_h, map, inner_w, 2, 0)
 
   -- Review round 1, Minor 3: popup.lua's own handle_pointer (line ~220)
   -- returns true for EVERY down inside the popup rect regardless of
@@ -670,33 +663,18 @@ do
   real_popup.handle_pointer({ kind = "down", button = "left", x = pcol, y = prow })
   check("the down never sends", #send_calls == 0)
   real_popup.handle_pointer({ kind = "up", button = "left", x = pcol, y = prow })
-  check("the matching up opens the travel menu via the REAL dispatch path "
+  -- A click on a map cell travels there directly (the private base's
+  -- behaviour this PR brings over): no travel menu in between. The matching
+  -- up is still what proves the down was consumed -- only a consumed down
+  -- gets its up delivered, and only a matched up travels.
+  check("the matching up travels to the cell via the REAL dispatch path "
     .. "(this is what actually proves the down was consumed -- see the comment above)",
-    last_menu_open ~= nil)
-
-  local asgard_value
-  for _, it in ipairs((last_menu_open or {}).items or {}) do
-    if it.value and it.value.name == "asgard" then asgard_value = it.value end
-  end
-  check("menu contains the asgard item", asgard_value ~= nil)
-
-  -- Review round 1, Minor 4: guard against a nil last_menu_open (e.g. a
-  -- real regression reintroducing the down-consumption bug) so a failure
-  -- here reports as a FAILED check on this and every later case, rather
-  -- than a Lua error that aborts the whole script before they run.
-  if last_menu_open then
-    send_calls = {}
-    last_menu_open.on_select(asgard_value)
-    check("selecting the item sends the EXACT path, in order",
-      #send_calls == 2 and send_calls[1] == "east" and send_calls[2] == "east",
-      table.concat(send_calls, ","))
-  else
-    check("selecting the item sends the EXACT path, in order", false, "menu never opened")
-  end
+    #send_calls == 2 and send_calls[1] == "east" and send_calls[2] == "east",
+    table.concat(send_calls, ","))
 
   -- Fail-closed (the brief's own case): down on the POI cell, release over
   -- a DIFFERENT, non-POI cell (0,0) -- must not open the menu or send.
-  local ocol, orow = to_screen(root_w, root_h, map_lx(0), off + 0)
+  local ocol, orow = cell_screen(root_w, root_h, map, inner_w, 0, 0)
   send_calls, last_menu_open = {}, nil
   real_popup.handle_pointer({ kind = "down", button = "left", x = pcol, y = prow })
   real_popup.handle_pointer({ kind = "up", button = "left", x = ocol, y = orow })
@@ -729,7 +707,7 @@ do
   })
   check("two-POI fixture replaced the live list (scenario E)", #S.vmap_pois == 2, #S.vmap_pois)
 
-  local bcol, brow = to_screen(root_w, root_h, map_lx(1), off + 0)
+  local bcol, brow = cell_screen(root_w, root_h, map, inner_w, 1, 0)
   send_calls, last_menu_open = {}, nil
   real_popup.handle_pointer({ kind = "down", button = "left", x = pcol, y = prow }) -- down on A (2,0)
   real_popup.handle_pointer({ kind = "up", button = "left", x = bcol, y = brow })   -- up on B (1,0)
@@ -764,7 +742,7 @@ do
   local _, _, bw = box_geometry(root_w, root_h)
   local inner_w = bw - 2
   local off = map.grid_line_offset(inner_w)
-  local pcol, prow = to_screen(root_w, root_h, map_lx(1), off + 0)
+  local pcol, prow = cell_screen(root_w, root_h, map, inner_w, 1, 0)
 
   -- A right down inside the popup, then the matching right up: the menu must
   -- open. If the module had NOT consumed the down, popup.lua would never have
@@ -803,13 +781,13 @@ do
   last_menu_open = nil
   real_popup.handle_pointer({ kind = "down", button = "right", x = pcol, y = prow })
   real_popup.handle_pointer({ kind = "up", button = "right", x = pcol, y = prow })
-  local pcol2, prow2 = to_screen(root_w, root_h, map_lx(2), off + 0)
-  last_menu_open = nil
+  local pcol2, prow2 = cell_screen(root_w, root_h, map, inner_w, 2, 0)
+  send_calls = {}
   real_popup.handle_pointer({ kind = "down", button = "left", x = pcol2, y = prow2 })
   real_popup.handle_pointer({ kind = "up", button = "left", x = pcol2, y = prow2 })
-  check("scenario F: a LEFT POI click still opens the travel menu afterwards",
-    last_menu_open ~= nil and last_menu_open.title == "Travel to...",
-    last_menu_open and last_menu_open.title)
+  check("scenario F: a LEFT POI click still travels afterwards",
+    #send_calls == 2 and send_calls[1] == "east" and send_calls[2] == "east",
+    table.concat(send_calls, ","))
 
   real_popup.close()
   check("scenario F: map popup closed cleanly", real_popup.is_open() == false)

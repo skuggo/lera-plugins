@@ -8193,13 +8193,13 @@ key = "viking_xml_02_status_and_return_triggers"
 category = "trigger"
 status = "parity"
 summary = "Dispatch guild-Viking status and return events."
-current_refs = ["3scapes/guild_viking/combat.lua:284", "3scapes/guild_viking/notify.lua:103"]
+current_refs = ["3scapes/guild_viking/init.lua:55", "3scapes/guild_viking/combat.lua:131", "3scapes/guild_viking/notify.lua:103"]
 
 [legacy_targets.features.evidence]
 type = "manual_private_review"
 review_date = "2026-08-20"
-reviewed_scope = "Compared guild_viking's combat.lua hp-bar triggers and notify.lua's cart/longship-return triggers against LEGACY's guild_viking status and return trigger elements."
-result = "guild_viking/combat.lua and notify.lua reproduce all 8 hp-bar screen-scrape triggers and the 5 cart/longship-return push triggers with matching patterns."
+reviewed_scope = "Compared guild_viking's status sources (Guild.State via the vitals handler init.lua registers, Char.Combat via combat.lua) and notify.lua's cart/longship-return triggers against LEGACY's guild_viking status and return trigger elements."
+result = "Every status field LEGACY's 8 hp-bar screen-scrape triggers parsed arrives over GMCP (handlers/vitals.lua; Char.Combat in combat.lua), so the triggers were dropped rather than kept as a second source ('autohp' hides the lines MUD-wide); notify.lua reproduces the 5 cart/longship-return push triggers with matching patterns."
 outcome = "pass"
 local_key = "guild_viking-viking_xml_02_status_and_return_triggers-manual"
 

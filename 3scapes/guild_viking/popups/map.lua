@@ -404,8 +404,28 @@ end
 
 local function make_grid(poi_at)
   local w, h = S.vmap_w or 0, S.vmap_h or 0
+  local tiles = require("tiles")
+  local tile = tiles.enabled("map") and tiles.board("map", S.vmap_rows, w, h)
+  local icons = { M="castle", L="mead_hall", P="longhouse", S="herbyrgi",
+    T="woods", R="rock", F="farm", ["*"]="skald_hall" }
   return {
     w = w, h = h,
+    image_max_cols = 4,
+    -- Landmark sprites contain transparent pixels. Draw the biome tile first
+    -- so those pixels reveal the terrain instead of the GUI clear color.
+    under = tile and function(c, r) return tile(c, r) end or nil,
+    image = tile and function(c, r)
+      if is_player_cell(c, r) then return tiles.city("camp_host_you"), true end
+      local poi = poi_at[r * w + c]
+      -- Glyph-mode Guild.Map can bake settlement/POI symbols into terrain
+      -- rows, just like MUSHclient's map. Landmark metadata is optional.
+      local sym = (poi and POI_TYPE_SYM[poi.type]) or terrain_glyph(r, c)
+      if sym == "X" then return tiles.city("camp_host_you"), true end
+      local name = icons[sym]
+      if name then return tiles.city(name), true end
+      if poi then return nil end -- unknown landmark: preserve its text marker
+      return tile(c, r)
+    end,
     cell = function(c, r)
       if is_player_cell(c, r) then
         return { glyph = "X", color = VMAP_COLOR.X }
@@ -419,6 +439,57 @@ local function make_grid(poi_at)
       return { glyph = ch, color = VMAP_COLOR[ch] or VMAP_COLOR_FALLBACK }
     end,
   }
+end
+
+-- Print runtime facts needed to distinguish a bad PNG/compositor from a
+-- wrong module or stale profile.  This intentionally inspects the exact
+-- callbacks used by maplib rather than duplicating their rendering logic.
+function M.debug()
+  local tiles = require("tiles")
+  local maplib = require("maplib")
+  local function source_of(fn)
+    -- Production Lua may omit the global debug library.  Source
+    -- introspection is optional and must never make the probe fail.
+    local dbg = rawget(_G, "debug")
+    local info = type(fn) == "function" and type(dbg) == "table"
+      and type(dbg.getinfo) == "function" and dbg.getinfo(fn, "S") or nil
+    return info and info.source or "(debug unavailable)"
+  end
+
+  local w, h = tonumber(S.vmap_w) or 0, tonumber(S.vmap_h) or 0
+  local rows = S.vmap_rows or {}
+  local pois = S.vmap_pois or {}
+  local grid = make_grid(poi_lookup())
+  local image_cells, overlay_cells, under_cells, paired_cells = 0, 0, 0, 0
+  local first_icon
+  for r = 0, h - 1 do
+    for c = 0, w - 1 do
+      local path, overlay
+      if grid.image then path, overlay = grid.image(c, r) end
+      if path then
+        image_cells = image_cells + 1
+        if overlay then overlay_cells = overlay_cells + 1 end
+        local base = grid.under and grid.under(c, r) or nil
+        if base then
+          under_cells = under_cells + 1
+          paired_cells = paired_cells + 1
+        end
+        if not first_icon and overlay then
+          first_icon = string.format("(%d,%d) icon=%s base=%s", c, r,
+            tostring(path), tostring(base))
+        end
+      end
+    end
+  end
+  buffer.color_print(nil, "DAA520", string.format(
+    "Viking mapdebug: map.lua=%s maplib=%s tiles=%s draw=%s",
+    source_of(M.debug), source_of(maplib.geometry),
+    tostring(tiles.available()), source_of(tiles.draw)))
+  buffer.color_print(nil, "DAA520", string.format(
+    "  grid=%dx%d rows=%d pois=%d tile_enabled=%s image=%d overlay=%d under=%d paired=%d",
+    w, h, #rows, #pois, tostring(tiles.enabled("map")), image_cells,
+    overlay_cells, under_cells, paired_cells))
+  buffer.color_print(nil, "DAA520", "  " .. (first_icon or "no overlay icon cells found"))
 end
 
 -- Compact rendering: one character per cell, no wall overlays.
@@ -553,7 +624,7 @@ function M.lines(width)
 
   local poi_at = poi_lookup()
   local grid = make_grid(poi_at)
-  for _, l in ipairs(maplib.render(grid, GRID_OPTS)) do
+  for _, l in ipairs(maplib.render(grid, GRID_OPTS, width)) do
     out[#out + 1] = l
   end
 
@@ -572,7 +643,7 @@ end
 function M.geometry(width)
   if (S.vmap_w or 0) == 0 then return nil end
   local grid = make_grid(poi_lookup())
-  return maplib.geometry(grid, GRID_OPTS)
+  return maplib.geometry(grid, GRID_OPTS, width)
 end
 
 function M.grid_line_offset(width)
@@ -663,7 +734,7 @@ end
 -- a player who is past `deadmans`' block_time when they click a POI has
 -- every command in the path silently swallowed by its on_send governance,
 -- not just the first (see plugins/README.md's automation section).
-local function travel_to(poi)
+local function travel_to_cell(x, y, name)
   -- viking_poi_menu_travel's four ColourNotes (12347-12357), verbatim. Two
   -- LEGACY quirks are reproduced rather than tidied: the name is the RAW
   -- wire name (`vmap_poi_selected.name`, so lowercase -- the display-cased
@@ -671,13 +742,17 @@ local function travel_to(poi)
   -- vmap_display_name), and "Already at" is the one line with no "[vmap] "
   -- prefix. Also verbatim: "(1 steps)" -- the count is interpolated with no
   -- plural handling.
-  local name = poi.name
+  name = name or string.format("(%d,%d)", x, y)
   if (S.vmap_px or -1) < 0 then
     status("[vmap] Player position unknown")
     status("[vmap]   %s", position_unknown_reason())
     return
   end
-  local path = pathfinding.bfs(S.vmap_px, S.vmap_py, poi.x, poi.y)
+  if S.vmap_active == 0 then
+    status("[vmap] Travel requires standing on the territory map.")
+    return
+  end
+  local path = pathfinding.bfs(S.vmap_px, S.vmap_py, x, y)
   if not path then
     status("[vmap] No passable route to %s", name)
     return
@@ -690,6 +765,10 @@ local function travel_to(poi)
   for _, dir in ipairs(path) do
     require("util").send(dir, "vmap travel")
   end
+end
+
+local function travel_to(poi)
+  return travel_to_cell(poi.x, poi.y, poi.name)
 end
 
 -- Exported (Task 6): pages/people.lua's errand-return button reuses this
@@ -716,6 +795,10 @@ local function open_poi_menu()
   if (S.vmap_px or -1) < 0 then
     status("[vmap] Travel unavailable: you are not on the map.")
     status("[vmap]   %s", position_unknown_reason())
+    return
+  end
+  if S.vmap_active == 0 then
+    status("[vmap] Travel requires standing on the territory map.")
     return
   end
   local pois = poi_menu_items()
@@ -796,16 +879,15 @@ function M.on_pointer(ev, ctx)
     hover = cell_tip(poi_at, c, r)
     ui.dirty()
     if ev.button ~= "left" then return nil end
-    if not poi_at_cell(poi_at, c, r) then return nil end
     track.record({ kind = "cell", c = c, r = r })
     return true
   end
 
   -- ev.kind == "up"
-  local matched = poi_at_cell(poi_at, c, r) ~= nil and track.matches({ kind = "cell", c = c, r = r })
+  local matched = track.matches({ kind = "cell", c = c, r = r })
   track.clear()
   if matched then
-    open_poi_menu()
+    travel_to_cell(c, r)
     return true
   end
   return nil

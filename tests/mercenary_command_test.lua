@@ -58,7 +58,6 @@ local api = {
   set_auto_use_stamina_threshold = function() return true end,
   set_auto_use_ap_threshold = function() return true end,
   set_auto_use_cooldown = function() return true end,
-  set_omit_status_lines = function() return true end,
 }
 command_ui.install(api)
 protocol.on_apply(function(sub, mirror, merc, switched)
@@ -105,11 +104,11 @@ check("an unknown subcommand prints usage",
   out:find("Usage:", 1, true) ~= nil, out)
 
 -- Kills: hiding available controls behind a separate help command. A bare
--- /merc must show the controls users need for status omission and auto-use.
+-- /merc must show the controls users need for auto-use.
 out = run("")
 check("the bare command lists Mercenary controls",
-  out:find("/merc omit on|off", 1, true) ~= nil
-    and out:find("/merc auto ability", 1, true) ~= nil, out)
+  out:find("/merc auto ability", 1, true) ~= nil
+    and out:find("/merc omit", 1, true) == nil, out)
 
 -- Kills: rendering a summary before any frame, which prints a blank mercenary.
 reset()

@@ -66,6 +66,25 @@ ui = {
 local sent = {}
 mud = { send = function(t) sent[#sent + 1] = t end }
 
+-- Recursive actions use paced timer callbacks, matching the client API.
+local timers, next_timer = {}, 0
+timer = {
+  after = function(ms, fn) next_timer = next_timer + 1; timers[next_timer] = fn; return next_timer end,
+  cancel = function(id) timers[id] = nil end,
+}
+local function drain()
+  for _ = 1, 50 do
+    local ids = {}
+    for id in pairs(timers) do ids[#ids + 1] = id end
+    if #ids == 0 then return end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+      local fn = timers[id]; timers[id] = nil
+      if fn then fn() end
+    end
+  end
+end
+
 local protocol = require("protocol")
 local pane = require("pane")
 
@@ -326,12 +345,17 @@ pick_overlay("yes", 30, 10)
 check("buttons: answering Yes runs it against the cwd",
       #sent == 1 and sent[1] == "uall /players/simon", tostring(sent[1]))
 
--- The recursive path from the toolbar: cwd first, then everything under it.
+-- The recursive path from the toolbar visits code directories, with paced sends.
+for _, dir in ipairs({ "archive", "areas", "mmm", "zebra" }) do
+  protocol.store("/players/simon/" .. dir, { dirs = {}, files = { "room.c" }, complete = true })
+end
 sent = {}
 pane.on_pointer({ kind = "down", button = "left", x = 12, y = 1,
                   inside = true, width = 30, height = 10 })
 pick_overlay("uall -r", 30, 10)
 pick_overlay("yes", 30, 10)
+check("recursive sends are paced", #sent == 0)
+drain()
 check("buttons: the recursive choice walks from the cwd",
       #sent >= 1 and sent[1] == "uall /players/simon", tostring(sent[1]))
 -- The cwd holds four folders, so a recursive run is the cwd plus those four.
@@ -541,6 +565,7 @@ pick_overlay("lall -r", 30, 10)
 check("dir: choosing one still asks before sending", #sent == 0, tostring(sent[1]))
 check("dir: and the question replaces it in the same place", overlay.active())
 pick_overlay("yes", 30, 10)
+drain()
 check("dir: confirming a recursive run walks from that folder",
       #sent >= 1 and sent[1] == "lall /players/simon/archive", tostring(sent[1]))
 

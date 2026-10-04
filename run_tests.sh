@@ -56,6 +56,7 @@ wm_module=$lera_root/scripts/default/wm.lua
 [ -r "$wm_module" ] || { printf 'missing %s - cannot load wm\n' "$wm_module" >&2; exit 1; }
 
 LERA_ROOT=$lera_root "$luajit" tests/chat_monitor_test.lua
+LERA_ROOT=$lera_root "$luajit" tests/chat_recording_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/push_notify_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/combat_notify_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/deadmans_test.lua
@@ -100,6 +101,7 @@ LERA_ROOT=$lera_root "$luajit" tests/guild_viking_window_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_page_menu_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popups_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_maplib_test.lua
+LERA_ROOT=$lera_root "$luajit" tests/guild_viking_tiles_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_pathfinding_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popup_map_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popup_sea_test.lua
@@ -118,5 +120,6 @@ LERA_ROOT=$lera_root "$luajit" tests/wizard_table_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/wizard_protocol_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/wizard_init_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/wizard_pane_test.lua
+LERA_ROOT=$lera_root "$luajit" tests/wizard_lpc_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/wizard_ferry_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/player_stats_test.lua

@@ -105,6 +105,28 @@ roster({ staff_total = 1, staff_slices = 1, staff_0 = { { name = "Only" } } })
 check("a shrunk roster drops the stale tail", #S.staff_list == 1
       and S.staff_list[1].name == "Only", #S.staff_list)
 
+-- A slice index ABOVE the old fixed scan range (0..7). Slices hold 4 records
+-- now so they fit one PROTOCOL_FRAME_MAX page, which makes a 55-strong roster
+-- 14 slices -- and the reader used to scan 0..7 only, so everything past index
+-- 7 was silently dropped on the floor. That is what produced "Hired Folk
+-- (2 of 55)" on screen: the tail of the list and nothing else.
+roster({ staff_total = 36, staff_slices = 9, staff_8 = {
+  { name = "Tail Ninth", assigned = "smithy", stat = "craft", best_stat = "craft",
+    stats = "1,2,3,4,5,6,7", trait = "taskmaster", loyalty = 3, age = "veteran",
+    arrive = 0, id = 99 },
+} })
+-- Slices accumulate in S.staff_parts.slices (util.merge_roster), by index.
+local slices = S.staff_parts and S.staff_parts.slices
+check("a slice past index 7 is accumulated, not ignored",
+  slices and slices[8] ~= nil and #slices[8] == 1, slices and #(slices[8] or {}))
+check("the accumulated high slice reaches staff_list",
+  (function()
+     for _, r in ipairs(S.staff_list or {}) do
+       if r.name == "Tail Ninth" then return true end
+     end
+     return false
+   end)(), #(S.staff_list or {}))
+
 -- ---- hird ------------------------------------------------------------------
 -- hird rotates the same way, and Bonds resolves its pair ids against
 -- S.hird_by_id -- a half-filled accumulator is what renders "#7 + #8".
@@ -279,6 +301,36 @@ local after = protocol.gmcp_stats().unknown
 check("an unmapped key is counted under its own GMCP name, not applied",
       (after["gneeds"] or 0) > before and after["rneeds"] ~= nil
       and after["some_future_key"] ~= nil)
+
+-- ---- paged rosters: the server's fixed <name>_page + <name>_from keys ----
+-- The server replaced the rotating <name>_<n> keys with one window per push.
+-- The client neither routed nor parsed the new keys, so the hird and staff
+-- lists stayed empty.
+S.hird_parts, S.hird_total = {}, 0
+local function hm(id, name, status) return { id = id, name = name, status = status } end
+roster({ hird_total = 5, hird_slices = 2, hird_from = 0,
+         hird_page = { hm(11, "Ulf", "city_pool"), hm(12, "Bjorn", "personal_guard"),
+                       hm(13, "Sigrid", "garrison") } })
+check("hird_page: the first window fills the first three members",
+      #S.hird_list == 3 and S.hird_by_id[11] and S.hird_by_id[11].status == "city_pool",
+      #S.hird_list)
+roster({ hird_from = 3, hird_page = { hm(14, "Astrid", "city_pool"), hm(15, "Leif", "wounded") } })
+check("hird_page: the next window completes the hird in member order",
+      #S.hird_list == 5 and S.hird_list[4].name == "Astrid" and S.hird_by_id[15] ~= nil,
+      #S.hird_list)
+roster({ hird_from = 0, hird_page = { hm(11, "Ulf", "unit_leader"),
+         hm(12, "Bjorn", "personal_guard"), hm(13, "Sigrid", "garrison") } })
+check("hird_page: a re-sent window replaces rather than appends",
+      #S.hird_list == 5 and S.hird_by_id[11].status == "unit_leader", #S.hird_list)
+roster({ hird_total = 3, hird_from = 0, hird_page = { hm(11, "Ulf", "unit_leader"),
+         hm(12, "Bjorn", "personal_guard"), hm(13, "Sigrid", "garrison") } })
+check("hird_page: a shrunk hird leaves no stale tail",
+      #S.hird_list == 3 and S.hird_by_id[15] == nil, #S.hird_list)
+S.staff_parts, S.staff_total = {}, 0
+roster({ staff_total = 2, staff_slices = 1, staff_from = 0,
+         staff_page = { { name = "Grima" }, { name = "Oddny" } } })
+check("staff_page: staff arrive through the page keys too",
+      #S.staff_list == 2 and S.staff_list[2].name == "Oddny", #S.staff_list)
 
 if failures > 0 then
   print("FAILURES: " .. failures)

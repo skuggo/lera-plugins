@@ -376,7 +376,12 @@ local PROD_BLDGS = {
 
 local function production_lines(add, width)
   local totals = {}
-  if S.production then
+  -- `next(S.production)`, not `S.production` alone: an EMPTY table is truthy
+  -- in Lua, and write_production sets S.production = {} before filling it. One
+  -- frame carrying no rows therefore latched an empty table for good, which
+  -- took the building-based estimate below out of reach -- it only ran when
+  -- the key had never arrived at all.
+  if S.production and next(S.production) ~= nil then
     for good, amt in pairs(S.production) do
       if amt ~= 0 then totals[good] = (totals[good] or 0) + amt end
     end
@@ -391,12 +396,33 @@ local function production_lines(add, width)
   end
   local has_prod = false
   for _, g in ipairs(PROD_GOOD_ORDER) do if totals[g] then has_prod = true; break end end
-  if not has_prod then return end
+
+  -- The tick countdown used to sit BELOW an early return on has_prod, so a
+  -- city with nothing to show that moment lost the timer as well -- and the
+  -- timer is the half you watch. It is the tick that is being counted, not
+  -- the goods: show the section whenever either is worth showing.
+  -- The tick is sent on every push now (Guild.City's "nexttick"), so its
+  -- absence is meaningful rather than an artefact of delta frames: nil means
+  -- nothing has arrived yet, -1 means no production tick has ever run, and
+  -- 0 or more is a real countdown. Show the section whenever either the tick
+  -- or the goods are worth showing -- the countdown is the half you watch,
+  -- and it used to sit below an early return that took it away exactly when
+  -- there was nothing produced that moment.
+  local tick = S.next_tick_in
+  local has_tick = tick ~= nil
+  if not has_prod and not has_tick then return end
 
   add(pagelib.header(width, "Production / Tick"))
-  if S.next_tick_in and S.next_tick_in > 0 then
-    add(pagelib.kv(width, "Next in:", cc.fmt_time(S.next_tick_in), C.bright_cyan))
+  if has_tick then
+    if tick > 0 then
+      add(pagelib.kv(width, "Next in:", cc.fmt_time(tick), C.bright_cyan))
+    elseif tick == 0 then
+      add(pagelib.kv(width, "Next in:", "due now", C.bright_cyan))
+    else
+      add(pagelib.kv(width, "Next in:", "no tick yet", C.dim))
+    end
   end
+  if not has_prod then return end
   local parts = {}
   for _, good in ipairs(PROD_GOOD_ORDER) do
     local qty = totals[good]

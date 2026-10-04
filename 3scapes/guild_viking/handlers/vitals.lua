@@ -10,9 +10,9 @@
 -- it depends on the prompt being enabled, on its exact layout, and on where
 -- the MUD happens to hard-wrap it (hence the three `_cont` continuation
 -- triggers reassembling fields split across physical lines). Guild.State has
--- every field as a typed integer. So GMCP is the source of truth now and the
--- triggers are the fallback, latched through S.vitals_gmcp -- see combat.lua's
--- header comment for the latch's two consequences.
+-- every field as a typed integer. So GMCP is the only source now: the
+-- screen-scrape triggers were removed, and 'autohp' turns the prompt lines off
+-- MUD-wide for anyone who does not want them on screen.
 --
 -- WHY ONE COMPOSITE. All eleven keys route to a single writer through
 -- gmcp_map.COMPOSITE's VITALS entry. That machinery exists for "one writer fed

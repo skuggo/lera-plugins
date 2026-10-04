@@ -27,6 +27,28 @@ trigger = {
   remove = function() end,
 }
 ui = { dirty = function() end }
+-- A fake clock: timer.after() queues the callback, tick() runs what is due.
+local timers, next_timer = {}, 0
+timer = {
+  after = function(ms, fn) next_timer = next_timer + 1
+                           timers[next_timer] = fn; return next_timer end,
+  cancel = function(id) timers[id] = nil end,
+}
+local function tick()
+  local ids = {}
+  for id in pairs(timers) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local fn = timers[id]; timers[id] = nil
+    if fn then fn() end
+  end
+end
+local function drain(limit)
+  for _ = 1, limit or 50 do
+    if next(timers) == nil then return end
+    tick()
+  end
+end
 gmcp = { on = function() return 1 end, send = function() return true end,
          enabled = function() return true end }
 
@@ -248,45 +270,59 @@ local protocol = require("protocol")
 protocol.reset()
 protocol.set_available(true)
 protocol.set_cwd("/a")
-protocol.store("/a",     { dirs = { "b", "c" }, files = {}, complete = true })
-protocol.store("/a/b",   { dirs = { "d" },      files = {}, complete = true })
-protocol.store("/a/b/d", { dirs = {},           files = {}, complete = true })
-protocol.store("/a/c",   { dirs = {},           files = {}, complete = true })
+-- Every folder here holds code except /a/c, which is data only.
+protocol.store("/a",     { dirs = { "b", "c" }, files = { "a.c" },     complete = true })
+protocol.store("/a/b",   { dirs = { "d" },      files = { "b.c", "x.h" }, complete = true })
+protocol.store("/a/b/d", { dirs = {},           files = { "d.c" },     complete = true })
+protocol.store("/a/c",   { dirs = {},           files = { "page1", "page2" }, complete = true })
 
 sent = {}
 actions.run_recursive("lall", "/a")
-check("recursive: every directory under the root gets its own command",
-      #sent == 4, #sent .. ": " .. table.concat(sent, " | "))
+check("recursive: nothing goes out in a burst -- the first send waits a tick",
+      #sent == 0, #sent .. ": " .. table.concat(sent, " | "))
+tick()
+check("recursive: one command per tick", #sent == 1, table.concat(sent, " | "))
+drain()
+check("recursive: only folders holding .c files get a command",
+      #sent == 3, #sent .. ": " .. table.concat(sent, " | "))
 check("recursive: the root goes first, then depth-first",
-      sent[1] == "lall /a" and sent[2] == "lall /a/b" and
-      sent[3] == "lall /a/b/d" and sent[4] == "lall /a/c",
+      sent[1] == "lall /a" and sent[2] == "lall /a/b" and sent[3] == "lall /a/b/d",
       table.concat(sent, " | "))
-check("recursive: the walk is over once the tree is exhausted",
+check("recursive: the walk is over once the tree and the queue are exhausted",
       actions.walking() == nil)
 
 -- uall prompts once per directory outside /players, so the auto-answer has to
--- count rather than hold a single path.
+-- count rather than hold a single path -- and keep counting across the paced
+-- sends.
 sent = {}
 actions.run_recursive("uall", "/a")
-check("recursive: one armed answer per directory", actions.pending_count() == 4,
+drain()
+check("recursive: one armed answer per folder with code", actions.pending_count() == 3,
       actions.pending_count())
 
 local answered = 0
-for i = 1, 4 do
+for i = 1, 3 do
   local before = #sent
   triggers[#triggers].fn("You are about to update all the files in the directory:")
   if #sent > before and sent[#sent] == "y" then answered = answered + 1 end
 end
-check("recursive: each prompt is answered exactly once", answered == 4, answered)
+check("recursive: each prompt is answered exactly once", answered == 3, answered)
 check("recursive: and the arm is spent afterwards", actions.pending_count() == 0,
       actions.pending_count())
 
 local before = #sent
 triggers[#triggers].fn("You are about to update all the files in the directory:")
-check("recursive: a fifth prompt is not ours to answer", #sent == before)
+check("recursive: a fourth prompt is not ours to answer", #sent == before)
 
 -- A second walk while one is running would interleave two sets of commands.
-protocol.store("/a", { dirs = { "b", "c" }, files = {}, complete = true })
+sent = {}
+actions.run_recursive("lall", "/a")
+check("recursive: a walk already running refuses a second one",
+      actions.run_recursive("lall", "/a") == false)
+actions.reset()
+drain()
+check("recursive: a reset cancels the paced sends still queued", #sent == 0,
+      table.concat(sent, " | "))
 check("recursive: refuses to start a walk on top of nothing is fine",
       actions.run_recursive("lall", "") == false)
 

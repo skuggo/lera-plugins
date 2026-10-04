@@ -395,7 +395,7 @@ end
 -- Walk from current place to destination
 function M.walk_to(dest)
   if not current_place then
-    print("[speedwalk] Current place not set. Use '.sw here <place>' to set it.")
+    print("[speedwalk] Current place not set. Use '/speedwalk set <place>' to set it.")
     return false
   end
 
@@ -491,7 +491,7 @@ function M.show_path(from, to)
     to = from
     from = current_place
     if not from then
-      print("[speedwalk] Current place not set")
+      print("[speedwalk] Current place not set. Use '/speedwalk set <place>' to set it.")
       return
     end
   end
@@ -611,7 +611,7 @@ local function set_place(place)
     if current_place then
       print("[speedwalk] Current place: " .. current_place)
     else
-      print("[speedwalk] Current place not set")
+      print("[speedwalk] Current place not set. Use '/speedwalk set <place>' to set it.")
     end
     return
   end

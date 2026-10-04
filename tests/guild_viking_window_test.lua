@@ -70,8 +70,9 @@ local expected_pages = {
   { key = "trade",  label = "Trade" },
   { key = "stock",  label = "Stock" },
   { key = "sea",    label = "Sea" },
+  { key = "map",    label = "Map" },
 }
-check("PAGES has 14 entries", #window.PAGES == 14, #window.PAGES)
+check("PAGES has 15 entries", #window.PAGES == 15, #window.PAGES)
 local pages_ok = true
 for i, exp in ipairs(expected_pages) do
   local got = window.PAGES[i]

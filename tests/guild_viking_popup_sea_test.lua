@@ -735,6 +735,30 @@ for _, l in ipairs(voyage.lines(WIDTH)) do
     pagelib.visible_width(l) <= WIDTH, pagelib.visible_width(l))
 end
 
+-- Saga and crew memory are prose, not labels. They used to be truncated to
+-- the pane, which satisfied the width check above by cutting the sentence off
+-- mid-word ("...off the coast of Fjordho"). They wrap now, so the whole
+-- sentence has to survive somewhere in the rendered block.
+do
+  local function rendered(lines)
+    local plain = {}
+    for _, l in ipairs(lines) do
+      plain[#plain + 1] = (l:gsub("\27%[[%d;]*m", ""))
+    end
+    return table.concat(plain, " "):gsub("%s+", " ")
+  end
+  local saga_text = rendered(sea_common.saga_lines(WIDTH))
+  check("the saga sentence is wrapped, not cut off",
+    saga_text:find("off the coast of Fjordholm and beyond.", 1, true) ~= nil, saga_text)
+  local mem_text = rendered(sea_common.memory_lines(WIDTH))
+  check("the crew memory is wrapped, not cut off",
+    mem_text:find("the storms, and the endless grey seas.", 1, true) ~= nil, mem_text)
+  for _, l in ipairs(sea_common.saga_lines(WIDTH)) do
+    check("wrapped saga row stays inside the pane: " .. l:sub(1, 16),
+      pagelib.visible_width(l) <= WIDTH, pagelib.visible_width(l))
+  end
+end
+
 -- =============================================================================
 -- ctx.cell_from_xy / ctx.line_from_y wiring through the real popups.lua
 -- wrapper (stubbed wm.popup) -- same ctx.cell_from_xy contract Task 3's map

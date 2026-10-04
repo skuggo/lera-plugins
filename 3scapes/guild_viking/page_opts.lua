@@ -57,21 +57,12 @@ page_opts.defaults = {
   show_war_ascii=false,   -- War tab maps in plain ASCII like the in-game vcampaign/vbattle
                           -- text view (same glyphs + colours), instead of tiles/icons
 
-  -- lera-only (not in LEGACY): gates the raw hp/threk/seid/vig/rad/... status
-  -- trigger lines (registered in init.lua) out of the main output buffer.
-  -- LEGACY always drew that data into its own detached window and never
-  -- printed the raw MIP lines to the main output either; now that the Stats
-  -- page (Task 3) shows the same data in the pane, gagging them here keeps
-  -- lera's main output as quiet as LEGACY's was. See init.lua/Task 3.
-  gag_status_lines = true,
-
   -- lera-only (not in LEGACY): gates the Stats page's Automation section
   -- (pages/stats.lua, Task 9) -- an on/off + last-action summary for the
   -- three client-side automations (auto-trade/auto-raid/auto-voyage).
   -- LEGACY has no such pane section; its closest analogs are the three
   -- separate settings mini-windows and this port's own /vik status command.
-  -- Default true (visible), matching the module-header disclosure
-  -- convention used above for gag_status_lines.
+  -- Default true (visible).
   show_stats_automation = true,
 }
 

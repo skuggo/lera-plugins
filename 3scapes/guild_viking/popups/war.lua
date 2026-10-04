@@ -89,6 +89,7 @@ end
 -- The sub-module a consumed down pinned this in-flight gesture to, or nil
 -- when no gesture is captured right now.
 local pinned_module = nil
+local menu_down = false
 
 function M.lines(width)
   local mod = active_module()
@@ -99,6 +100,19 @@ function M.lines(width)
 end
 
 function M.on_pointer(ev, ctx)
+  -- Right-click the header/background for display options. Board cells
+  -- retain their existing deployment/cancel-selection gestures.
+  local c = ctx.cell_from_xy and ctx.cell_from_xy(ev.x, ev.y)
+  if ev.kind == "cancel" then menu_down = false end
+  if ev.button == "right" and ev.kind == "down" and c == nil then
+    menu_down = true
+    return true
+  end
+  if ev.button == "right" and ev.kind == "up" and menu_down then
+    menu_down = false
+    if c == nil and ev.inside ~= false then require("page_menu").open("war") end
+    return true
+  end
   if ev.kind == "up" or ev.kind == "cancel" then
     -- Route to the module that took the matching down, not whatever
     -- active_module() resolves to NOW -- see the gesture-pinning comment
@@ -146,6 +160,7 @@ end
 -- sub-modules' own reset() so whichever one actually holds hover state
 -- gets cleared regardless of which is "active" right now.
 function M.reset()
+  menu_down = false
   pinned_module = nil
   if war_campaign.reset then war_campaign.reset() end
   if war_battle.reset then war_battle.reset() end

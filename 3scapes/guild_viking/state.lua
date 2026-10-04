@@ -50,12 +50,9 @@ local state = {
   -- triggers scrape, or Guild.State's fx.stfx, which the mudlib pre-renders in
   -- the same format.
   stfx = {},
-  -- True once a Guild.State frame has written the vitals block. While set,
-  -- combat.lua's eight hp-bar triggers stop writing state (they stay
-  -- REGISTERED -- they are also what gags the prompt lines from the main
-  -- buffer). Per-connection, like the MIP per-key latch: cleared by
-  -- reset_connection so a reconnect that never negotiates GMCP falls back to
-  -- the triggers instead of freezing on the last connection's numbers.
+  -- True once a Guild.State frame has written the vitals block this
+  -- connection; cleared by reset_connection. (It used to stand the hp-bar
+  -- screen-scrape triggers down; those are gone -- GMCP is the only source.)
   vitals_gmcp = false,
   -- City / trade / farm / blot (from mip.viking_extra / send_mip_city)
   carts      = {},   -- { mode, good, village, return_in, amount, halfway_in, quality_pct, cart_id, tier, durability, cap, refit }
@@ -162,12 +159,12 @@ local state = {
   staff_list = {},  -- { name, assigned_to, stat_key, stats={combat=N,...}, trait, loyalty, age, arrive_at }
   staff_total = 0,     -- how many staff the guild has
   staff_slices = 0,    -- how many rotating slices that list is sent in
-  staff_by_slice = {}, -- [index] = slice, accumulated across pushes
+  staff_parts = {}, -- { members, slices } accumulated across pushes (util.merge_roster)
   hird_list  = {},  -- { name, status, level, mode }
   hird_by_id = {},    -- [id] = hird record; what Bonds resolves pair ids against
   hird_total = 0,     -- how many hirdmadrs the guild has
   hird_slices = 0,    -- how many rotating slices that list is sent in
-  hird_by_slice = {}, -- [index] = slice, accumulated across pushes
+  hird_parts = {}, -- { members, slices } accumulated across pushes (util.merge_roster)
   bonds_list  = {},  -- { id_a, id_b, ticks, tier }
   standings   = {},  -- { [lin_id] = { name, score, label, is_own } }
   village_rep = {},  -- { [lin_id] = { name, rep, rank, next_at } }
@@ -189,7 +186,10 @@ local state = {
                    use_stock = false, auto_stock = 0, last_msg = "", show_n = 6, log = {},
                    stock_priority = true, pack = false, status = "", last_jobs = nil },
   route_upkeep = 0,  -- total road+fort maintenance cost, daler/tick (from RUPKEEP)
-  next_tick_in = 0, -- seconds until next trade/stock production tick
+  -- nil until Guild.City's "nexttick" arrives; then -1 ("no tick has ever
+  -- run"), 0 ("due now") or a real countdown. Starting at 0 made "nothing
+  -- has arrived" indistinguishable from "due this second".
+  next_tick_in = nil, -- seconds until next trade/stock production tick
   demand_cycle = "",
   demand_cycle_in = 0, -- seconds until next demand cycle shift
   -- Weather / season
@@ -235,6 +235,10 @@ local state = {
   vmap_south_edges = {}, -- [wire row + 1] = south edge passability string
   vmap_pois = {},   -- { type, name, x, y, owner }
   vmap_pois_keys = {},          -- { "x,y" = true } dedup lookup
+  vmap_landmark_rev = nil,
+  vmap_landmark_chunks = 0,
+  vmap_landmark_parts = {},
+  vmap_landmark_received = 0,
   -- 1 while the player is standing on the biome grid, 0 while vmap_px/py are
   -- the last position we saw them at. Starts at 1 because Guild.Map's first
   -- frame after connect is a full one and always carries it -- the value only
@@ -281,6 +285,10 @@ function M.reset_connection()
   state.vmap_legend = nil
   state.vmap_legend_edge = nil
   state.vmap_terrain_glyphs = nil
+  state.vmap_landmark_rev = nil
+  state.vmap_landmark_chunks = 0
+  state.vmap_landmark_parts = {}
+  state.vmap_landmark_received = 0
 end
 
 return M

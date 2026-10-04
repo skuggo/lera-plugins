@@ -88,18 +88,12 @@ local function ready_vitals(merc)
            target = "Orc", target_hp = 60 }
 end
 
--- ---- legacy status omission -----------------------------------------------
-check("legacy mercenary status lines are omitted by default",
-  #added_triggers == 3
-    and added_triggers[1].opts.omit_from_output == true
-    and added_triggers[1].pattern:find("HP:", 1, true) ~= nil,
-  "triggers=" .. #added_triggers)
-M.set_omit_status_lines(false)
-check("disabling omission unregisters every status trigger",
-  #removed_triggers == 3, "removed=" .. #removed_triggers)
-M.set_omit_status_lines(true)
-check("enabling omission restores all three status triggers",
-  #added_triggers == 6, "triggers=" .. #added_triggers)
+-- ---- no output gags -------------------------------------------------------
+-- The MUD's status bar is switched off in game ('merc sethpbar off'); the
+-- plugin installs no triggers to hide it.
+check("the plugin installs no output triggers",
+  #added_triggers == 0, "triggers=" .. #added_triggers)
+check("the omission API is gone", M.set_omit_status_lines == nil)
 
 -- ---- auto-use -------------------------------------------------------------
 -- Kills: dropping the auto_use_enabled guard. The ability is deliberately set

@@ -28,6 +28,7 @@ local last_name = nil     -- room name from the most recent accepted frame
 local pending_dirs = {}   -- emitted directions, consumed by confirmed entries
 local layer_corrections = 0  -- times the room name overrode a reckoned z
 local desync_count = 0       -- times contradicted topology forced a map reset
+local reset_unanchored = false -- a reset map whose first arrival has not landed
 
 -- M.leave()'s walk back to the origin. nil means no leave is in progress;
 -- once armed it is an array of directions (possibly already empty, once the
@@ -102,6 +103,7 @@ function M.start(prof, initial_policy)
   last_name = nil
   layer_corrections = 0
   desync_count = 0
+  reset_unanchored = false
 
   -- Seed from the room we are already standing in. The entry room's Room.Info
   -- arrives when the player WALKS INTO the area, which is before the explore
@@ -118,13 +120,19 @@ function M.start(prof, initial_policy)
   return true
 end
 
--- Pause: a half-emitted move and a partly-walked leave route must not
--- survive it, since the player may move by hand before resuming -- but the
--- map, profile and last-known room are kept, so M.resume() can pick the run
--- back up without remapping from scratch. M.discard() is the real teardown.
-function M.stop()
+-- Pause: a partly-walked leave route must not survive it, since the player may
+-- move by hand before resuming -- but the map, profile and last-known room are
+-- kept, so M.resume() can pick the run back up without remapping from scratch.
+-- M.discard() is the real teardown.
+--
+-- keep_in_flight holds on to a single direction already sent: the stepper is
+-- mid-step for most of a run, so a pause usually lands between sending a move
+-- and its entry arriving. Dropped, that entry would read as a move nobody sent
+-- and cost the whole map; held, M.settle() commits it when it lands. The
+-- caller bounds how long it is held (see init.lua's in-flight window).
+function M.stop(keep_in_flight)
   active = false
-  pending_dirs = {}
+  if not (keep_in_flight and #pending_dirs == 1) then pending_dirs = {} end
   pending_leave_path = nil
 end
 
@@ -164,11 +172,32 @@ function M.resume()
   local info = ri and ri.info and ri.info()
   local current = type(info) == "table" and info.room or nil
   if not current or not profile.in_area(current) then return false end
-  -- Only sets `active`. pending_dir and pending_leave_path are M.stop()'s
-  -- job -- not repeated here -- so a stale one surviving a stop stays
-  -- observable through a resume rather than being silently mopped up here.
+  -- A direction held across the stop (M.stop(true)) that has still not
+  -- landed goes here: the resume re-anchors on a refresh of the room the
+  -- player stands in now, and committing the held move against that answer
+  -- would step the map one room past the player. pending_leave_path is
+  -- M.stop()'s job and is not repeated here.
+  pending_dirs = {}
   active = true
   return true
+end
+
+-- True while a paused run holds a direction it sent before the stop.
+function M.in_flight()
+  return (not active) and #pending_dirs > 0
+end
+
+-- The in-flight window closed without the entry: the move is taken not to
+-- have happened, as the arrival watchdog does for a running step.
+function M.drop_in_flight()
+  pending_dirs = {}
+end
+
+-- True when a map with at least one recorded room is held. A freshly reset
+-- map has none, which is what keeps one unasked move from resetting again on
+-- every room walked after it.
+function M.holds_rooms()
+  return map ~= nil and map:count() > 0
 end
 
 -- Reset the map and start over from a fresh origin. Works whether the run is
@@ -179,6 +208,7 @@ end
 function M.reset(reason)
   if not map then return end
   map = map_mod.new({ vertical = profile and profile.vertical })
+  reset_unanchored = true
   pending_dirs = {}
   -- A pending leave path names directions in the OLD map's coordinate frame;
   -- left set across a reset, next_step() would keep walking it against a map
@@ -189,17 +219,33 @@ function M.reset(reason)
   end
 end
 
--- Called for every accepted Room.Info frame.
+-- Called for every accepted Room.Info frame. Tracked while a paused map is
+-- held too: M.settle() commits a held move against the room it lands in, and a
+-- dump taken while paused should describe where the player actually stands.
 function M.on_frame(info)
-  if not active or not info then return end
+  if not map or not info then return end
   last_exits = filter_exits(info.exits)
   last_name = info.room
 end
 
--- Called once the arrival has been committed by the step cycle. Everything
--- position-related happens here and nowhere else.
+local arrive
+
+-- Called once the arrival has been committed by the step cycle.
 function M.on_arrival()
   if not active then return end
+  arrive()
+end
+
+-- A paused run's own move landing after the stop: commit it exactly as a
+-- running arrival would. False (nothing changed) unless a direction is held.
+function M.settle()
+  if active or not map or #pending_dirs ~= 1 then return false end
+  arrive()
+  return true
+end
+
+-- Everything position-related happens here and nowhere else.
+arrive = function()
 
   -- Left the area: discard rather than dead-reckon the outside world into a
   -- map of somewhere else, and rather than merely pausing -- a map of an
@@ -225,6 +271,18 @@ function M.on_arrival()
   -- dispute: the room name is the authority for z, so a disagreement here is
   -- not evidence of a desync.
   local x, y, z = map:position()
+  -- A map a reset left with nothing recorded yet has no reckoned layer to be
+  -- wrong about: it takes the room name's, silently. A reset while paused on
+  -- layer two would otherwise meet its first arrival with a "correction" --
+  -- the tripwire below, spent on a map that never claimed to be anywhere.
+  if reset_unanchored and map:count() == 0 and profile and profile.layer_of and last_name then
+    local layer = profile.layer_of(last_name)
+    if type(layer) == "number" and layer ~= z then
+      map:set_position(x, y, layer)
+      z = layer
+    end
+  end
+  reset_unanchored = false
   if profile and profile.layer_of and last_name then
     local layer = profile.layer_of(last_name)
     if type(layer) == "number" and layer ~= z then
@@ -412,9 +470,11 @@ function M.dump_lines()
   local function add(s) out[#out + 1] = s end
   if not map then add("no map held"); return out end
   local x, y, z = map:position()
+  -- No stop reason: it is only meaningful the moment next_step() returns nil,
+  -- and the dump's own header already says why this one was taken.
   add(string.format("position %d,%d,%d  rooms %d  policy %s  desyncs %d  "
-    .. "layer corrections %d  stop reason %s", x, y, z, map:count(), policy,
-    desync_count, layer_corrections, tostring(stop_reason_val)))
+    .. "layer corrections %d  %s", x, y, z, map:count(), policy,
+    desync_count, layer_corrections, active and "active" or "paused"))
   add("current room name: " .. tostring(last_name))
   add("current room exits (last frame): " .. table.concat(last_exits, " "))
   local here = map:room(x, y, z)
@@ -449,13 +509,12 @@ function M.dump_lines()
   add("rooms (x,y,z: exit. = into recorded room, exit* = into unrecorded):")
   for _, k in ipairs(keys) do
     local room = map.rooms[k]
+    -- The explorer's own frontier test, so the marks cannot drift from it.
+    local frontier = {}
+    for _, dir in ipairs(map:frontier_dirs(room)) do frontier[dir] = true end
     local ex = {}
     for _, dir in ipairs(map_mod.DIR_ORDER) do
-      if room.exits[dir] then
-        local d = map.delta[dir]
-        local seen = map:visited(room.x + d[1], room.y + d[2], room.z + d[3])
-        ex[#ex + 1] = dir .. (seen and "." or "*")
-      end
+      if room.exits[dir] then ex[#ex + 1] = dir .. (frontier[dir] and "*" or ".") end
     end
     add(string.format("  %s: %s", k, table.concat(ex, " ")))
   end
