@@ -161,7 +161,23 @@ local function write_streamed_tgoods(parts, full)
   end
   local goods = decode_tgoods_records(parts.goods)
   local expected = supplied_expected or tgoods_stream.expected
-  if not expected then error("TGOODS lin_count is required before the first stream") end
+  if not expected then
+    -- A lineage slice before we know how many there are. The server sends
+    -- lin_count only when it changes, so this is what a plugin reload (or a
+    -- writer that missed the first frame) sees on every push until a full
+    -- one: ask for that full Guild resend once a minute, and wait for it,
+    -- instead of erroring on every push.
+    local now = os.time()
+    if (tgoods_stream.resend_at or 0) + 60 <= now
+        and gmcp and type(gmcp.enabled) == "function" and type(gmcp.send) == "function" then
+      local ok, enabled = pcall(gmcp.enabled)
+      if ok and enabled == true then
+        tgoods_stream.resend_at = now
+        pcall(gmcp.send, "Core.Supports.Add", { "Guild 1" })
+      end
+    end
+    return
+  end
 
   local fresh = full
       or supplied_expected ~= nil and supplied_expected ~= tgoods_stream.expected
