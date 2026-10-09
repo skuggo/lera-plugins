@@ -125,6 +125,24 @@ end
 
 local gmcp_id, combat_gmcp_id, countdown_id
 local notify_trigger_ids = {}
+local gag_trigger_ids = {}
+
+-- Hide the MUD's autohp bar (combat.gag_triggers) from the main output; the
+-- Stats page shows the same numbers from GMCP. Whether the MUD sends the bar
+-- at all is its own setting, so there is no client toggle.
+local function register_gag_triggers()
+  for _, t in ipairs(combat.gag_triggers) do
+    gag_trigger_ids[#gag_trigger_ids + 1] =
+      trigger.add(t.pattern, t.fn, { omit_from_output = true })
+  end
+end
+
+local function unregister_gag_triggers()
+  for _, tid in ipairs(gag_trigger_ids) do
+    trigger.remove(tid)
+  end
+  gag_trigger_ids = {}
+end
 local vik_command_id, resetvikxp_id, kill_listener_id
 
 -- LEGACY plugins/guild_viking.xml:175-186 (`resetvikxp` alias), also reached
@@ -472,6 +490,7 @@ function M.on_load()
   gmcp_id = gmcp.on("Guild", function(pkg, data) protocol.on_gmcp(pkg, data) end)
 
   persist.load()
+  register_gag_triggers()
 
   for _, t in ipairs(notify.triggers) do
     notify_trigger_ids[#notify_trigger_ids + 1] = trigger.add(t.pattern, t.fn)
@@ -575,6 +594,7 @@ function M.on_unload()
     trigger.remove(tid)
   end
   notify_trigger_ids = {}
+  unregister_gag_triggers()
 
   if vik_command_id then
     command.unregister(vik_command_id)

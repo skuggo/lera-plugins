@@ -72,11 +72,34 @@ local STFX_DEFAULT = { cat="DoT", cs="#FF5555", ci=0x5555FF }
 M.STFX_CAT_ORDER  = { "Def", "Heal", "Off", "Pwr", "DoT" }
 M.STFX_CAT_LABELS = { Def="Def", Heal="Heal", Off="Off", Pwr="Pwr", DoT="DoT" }
 
--- The hp-bar screen-scrape triggers that used to live here are gone. Every
--- field they parsed arrives over GMCP (Guild.State -> handlers/vitals.lua,
--- Char.Combat below), and a player who does not want the status lines on
--- screen turns them off MUD-wide with 'autohp' -- so neither the parsing nor
--- the gag_status_lines gagging they did has a job left.
+-- The MUD still prints its autohp bar every round, GMCP or not, and wraps it
+-- at 72 columns. GMCP supplies the numbers (Guild.State, Char.Combat), so
+-- these patterns only hide the bar from the main output; their handlers do
+-- nothing. The *_cont / *_open patterns catch the wrapped pieces:
+--   H[..] S[..] V[..] R[..] F[-----      (hp_bar_1, F/C optional)
+--   -] C[0/0]                            (hp_bar_1_cont)
+--   G[..] L[..] E[..]                    (hp_bar_2, hp_bar_2_cont, _vis)
+--   [aeg:457 ... bsjon:134 / ljos:41]    (hp_bar_3, _open, _cont)
+-- Removed with the text parsing in 56d8db9, which left the bar on screen.
+local function gag_only() end
+M.gag_triggers = {
+  { name = "hp_bar_1", fn = gag_only, pattern =
+    "^H\\[(\\d+)\\|(\\d+)\\((\\d+)\\|(\\d+)\\)\\] S\\[(\\d+)\\|(\\d+)\\] V\\[(\\d+)\\|(\\d+)\\] R\\[(\\d+)\\|(\\d+)\\]" },
+  { name = "hp_bar_1_cont", fn = gag_only,
+    pattern = "^\\s*(?:[-*]*\\]\\s*)?C\\[(\\d+)/(\\d+)\\]\\s*$" },
+  { name = "hp_bar_2", fn = gag_only, pattern =
+    "^G\\[(\\d+)\\((\\d+)\\)\\|(\\d+)\\((\\d+)\\)\\|(\\d+)\\((\\d+)\\)\\|(\\d+)\\((\\d+)\\)\\] " ..
+    "L\\[(\\d*)\\|(\\d*)\\((\\d*)%\\)\\] E\\[([^|]*)\\|([^|]*)(?:\\|(\\d*))?\\]?" },
+  { name = "hp_bar_2_cont", fn = gag_only, pattern = "^(\\d+)\\]\\s*$" },
+  { name = "hp_bar_2_vis", fn = gag_only, pattern =
+    "^Vis:(\\d+)\\s+Kap:(\\d+)\\s+Soe:(\\d+)\\s+Aud:(\\d+)\\s+L\\[(\\d+)\\|(\\d+)\\]\\s+E\\[([^\\]]*)\\]?" },
+  { name = "hp_bar_3", fn = gag_only,
+    pattern = "^\\[(\\s*(?:[a-z]+:[0-9/]+\\s*)*)\\]\\s*$" },
+  { name = "hp_bar_3_open", fn = gag_only,
+    pattern = "^\\[(\\s*(?:[a-z]+:[0-9/]+\\s*)+)$" },
+  { name = "hp_bar_3_cont", fn = gag_only,
+    pattern = "^((?:[a-z]+:[0-9/]+\\s*)*)\\]\\s*$" },
+}
 
 -- Session XP accumulation, used by handlers/vitals.lua's gxp writer. Gated on a non-zero round total:
 -- the gains arrive on every prompt/beat, so accumulating unconditionally would
