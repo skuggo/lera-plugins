@@ -71,6 +71,9 @@ local popups = require("popups")
 -- Guild.State the rest.
 local combat = require("combat")
 
+-- Rejoins the hp bar lines the MUD wraps at 72 columns (on_line below).
+local hpbar_join = require("hpbar_join")
+
 -- Task 9: push notifications + the per-second countdown timer. `pushn` is
 -- looked up in on_setup (plugins load before on_setup runs, per CLAUDE.md's
 -- Push API producer pattern) and handed to notify.set_push; it stays nil,
@@ -622,7 +625,13 @@ function M.on_connect()
   S.idle_carts  = {}
 end
 
+-- Every raw line from the MUD: rejoin a wrapped hp bar, keep the rest.
+function M.on_line(line)
+  return hpbar_join.on_line(line)
+end
+
 function M.on_disconnect()
+  hpbar_join.reset()
   persist.save()
   state_mod.reset_connection()
   protocol.reset_connection()
