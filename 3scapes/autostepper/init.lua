@@ -263,6 +263,44 @@ local function normalize_mob_name(name)
   if normalized ~= "" then return normalized end
 end
 
+-- An entry written "~words" matches any mob whose name contains those words
+-- as whole words, so "~warband" ignores "A warband in service to Lennart
+-- [Legendary] [6]" whatever rank tags follow. Letters, digits, ' and - count
+-- as word characters: "~marie" does not match "britt-marie".
+local WORD_CHAR = "[%w'%-]"
+
+local function canonical_ignore(normalized)
+  if not normalized or normalized:sub(1, 1) ~= "~" then return normalized end
+  local words = normalize_mob_name(normalized:sub(2))
+  return words and ("~" .. words) or nil
+end
+
+local function contains_words(name, words)
+  local from = 1
+  while true do
+    local s, e = name:find(words, from, true)
+    if not s then return false end
+    local before = s > 1 and name:sub(s - 1, s - 1) or ""
+    local after = name:sub(e + 1, e + 1)
+    if not before:find(WORD_CHAR) and not after:find(WORD_CHAR) then return true end
+    from = s + 1
+  end
+end
+
+-- Whether a room monster is on the ignore list: an exact entry for its whole
+-- normalized name, or a "~" entry whose words appear in it.
+local function mob_ignored(monster)
+  local name = normalize_mob_name(monster)
+  if not name then return false end
+  if ignored_monsters[name] then return true end
+  for entry in pairs(ignored_monsters) do
+    if entry:sub(1, 1) == "~" and contains_words(name, entry:sub(2)) then
+      return true
+    end
+  end
+  return false
+end
+
 local function load_mobignore()
   ignored_monsters = {}
   if not store then return end
@@ -271,7 +309,7 @@ local function load_mobignore()
   local names = type(data) == "table" and data.ignored_monsters
   if type(names) ~= "table" then return end
   for name, value in pairs(names) do
-    local normalized = normalize_mob_name(name)
+    local normalized = canonical_ignore(normalize_mob_name(name))
     if value == true and normalized then ignored_monsters[normalized] = true end
   end
 end
@@ -291,7 +329,7 @@ end
 local function dispatch_mobignore(rest)
   local action, name = rest:match("^(%S*)%s*(.-)%s*$")
   action = action:lower()
-  local normalized = normalize_mob_name(name)
+  local normalized = canonical_ignore(normalize_mob_name(name))
   if (action == "add" or action == "remove") and normalized then
     if action == "add" then
       if ignored_monsters[normalized] then
@@ -313,14 +351,15 @@ local function dispatch_mobignore(rest)
     local names = {}
     for n in pairs(ignored_monsters) do names[#names + 1] = n end
     table.sort(names)
-    log("Ignored mobs (exact normalized display names): " .. #names)
+    log("Ignored mobs (~ entries match whole words, others exact normalized "
+        .. "display names): " .. #names)
     for _, n in ipairs(names) do log("  " .. n) end
   elseif action == "clear" and name == "" then
     ignored_monsters = {}
     save_mobignore()
     log("Mob ignore list cleared")
   else
-    log("Usage: /step mobignore add|remove <name> | list | clear", COLOR_WARN)
+    log("Usage: /step mobignore add|remove <name>|~<words> | list | clear", COLOR_WARN)
   end
 end
 
@@ -1063,7 +1102,7 @@ function process_room()
   -- decision, and removing an ignore must not lose a still-present monster.
   local monsters = {}
   for _, monster in ipairs(room_monsters) do
-    if not ignored_monsters[normalize_mob_name(monster) or ""] then
+    if not mob_ignored(monster) then
       monsters[#monsters + 1] = monster
     end
   end
@@ -1144,7 +1183,7 @@ local function show_help()
   log("  /step trace [on|off]   - Log room frames, refreshes and decisions")
   log("  /step dump             - Save the explore map and recent history (last 5 kept)")
   log("                           to .storage/autostepper.json; automatic when exploring ends 'exhausted'")
-  log("  /step mobignore add|remove <name> | list | clear")
+  log("  /step mobignore add|remove <name>|~<words> | list | clear")
   log("                           Exact full name, case/whitespace normalized; saved per profile")
   log("  /step explore [area]   - Start explore mode in an area (default: chaossea)")
   log("  /step explore off      - Stop explore mode")

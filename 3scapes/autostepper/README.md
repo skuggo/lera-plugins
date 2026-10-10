@@ -133,6 +133,20 @@ Punctuation, articles, and all other words remain significant. For example,
 `A gentle guide` matches `  a  GENTLE guide ` but not `a gentle guide captain`.
 There are no substring, wildcard, or Lua-pattern matches; `.*` is literal.
 Use the full name reported by roominfo, not just a kill-command keyword.
+
+An entry that starts with `~` is a **word match** instead, for mobs whose names
+change, such as followers that carry rank tags:
+
+```
+/step mobignore add ~warband
+/step mobignore add ~britt-marie
+```
+
+`~warband` ignores `A warband in service to Lennart [Legendary] [6]` and every
+other name containing `warband` as a whole word; the words after `~` are
+normalized like a name and must appear consecutively. Letters, digits, `'` and
+`-` are word characters, so `~marie` does not match `britt-marie` and
+`~guide` does not match `guidebook`. Plain entries keep exact matching.
 The legacy XML's `-mobignore` used Lua-pattern substring matching; this list
 is intentionally safer and is not automatically imported.
 
