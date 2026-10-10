@@ -912,6 +912,26 @@ local function write_explore_dump(why, automatic)
   return false
 end
 
+-- In a Chaos Sea explore run, what the current room means for completion:
+-- "clear" when the cask or portal is here and its boss is dead, "boss" when
+-- they are here and the boss still lives, nil anywhere else. A profile without
+-- boss_present falls back to "no monsters left".
+local function chaossea_cask_state(monsters)
+  local prof = run_mode == "explore" and explore and explore.profile
+    and explore.profile()
+  if not (prof and prof.name == "chaossea" and prof.complete and ri and ri.items
+      and prof.complete({ items = ri.items() })) then
+    return nil
+  end
+  local boss
+  if prof.boss_present then
+    boss = prof.boss_present(monsters)
+  else
+    boss = #monsters > 0
+  end
+  return boss and "boss" or "clear"
+end
+
 local function do_step(monsters)
   local step
   local notify_step = true
@@ -933,10 +953,7 @@ local function do_step(monsters)
     -- Completion belongs to the cleared room, before frontier selection.
     -- The cask can be reached while other branches remain unexplored. Use
     -- process_room's filtered mobs so profile ignores apply to completion too.
-    local prof = explore.profile and explore.profile()
-    local at_completion = #monsters == 0 and prof and prof.name == "chaossea"
-      and prof.complete and ri and ri.items
-      and prof.complete({ items = ri.items() })
+    local at_completion = chaossea_cask_state(monsters) == "clear"
     if at_completion and ri.contents_truncated and ri.contents_truncated() then
       -- A dropped inventory entry could be a living boss. Stop without
       -- claiming completion or scheduling another farm instance.
@@ -1068,6 +1085,23 @@ function process_room()
     end
   end
   local room = ri.room() or "unknown"
+
+  -- The cask room decides before the player check: with the boss dead it is
+  -- the end of the run whoever else is standing there, and with the boss alive
+  -- the run fights it rather than stepping away from the one room it came for.
+  local cask_state = chaossea_cask_state(monsters)
+  if cask_state == "clear" then
+    do_step(monsters)
+    return
+  end
+  if cask_state == "boss" and config.auto_attack and prof and prof.boss_present then
+    for _, monster in ipairs(monsters) do
+      if prof.boss_present({ monster }) then
+        do_attack(monster)
+        return
+      end
+    end
+  end
 
   -- Check if player in room
   if #players > 0 and config.step_on_player then

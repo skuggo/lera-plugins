@@ -497,6 +497,50 @@ do
   check("duplicate contents and old timers cannot resume a completed cask run", not e.as.is_running() and #e.sent == 3 and completed == 1)
 end
 
+-- The 2026-10-08 exhaustion dumps: a second player and both parties'
+-- warbands and companions follow the stepper into every room. In the cask
+-- room the boss died, but those companions still counted as monsters, so
+-- "no monsters left" never held, the player in the room made the stepper walk
+-- on, and the cask was never revisited -- 870 of 870 rooms, "exhausted".
+local warband = "A warband in service to Lennart [Legendary] [Grey-bearded] [6]"
+local companion = "Bosse, the Void Touched {Offensive}"
+
+do
+  local e = engine()
+  local completed = 0
+  e.as.on_complete(function() completed = completed + 1 end)
+  e.begin({n = 0, e = 0}, {})
+  e.info({s = 0})
+  e.contents({boss}, nil, true, {cask, portal})
+  check("cask boss is fought with no one else here", e.sent[2] == "kill mutant")
+  e.deliver("Char.Combat", {attacker = ""})
+  e.contents({warband, companion}, {"Lennart"}, false, {cask, portal})
+  check("companions and a player beside a dead boss still complete the cask",
+    not e.as.is_running() and completed == 1 and #e.sent == 2)
+end
+
+do
+  local e = engine()
+  local completed = 0
+  e.as.on_complete(function() completed = completed + 1 end)
+  e.begin({n = 0, e = 0}, {})
+  e.info({s = 0})
+  e.contents({warband, boss}, {"Lennart"}, true, {cask, portal})
+  check("a player in the cask room does not make the stepper walk past a live boss",
+    e.sent[2] == "kill mutant" and e.as.is_running() and completed == 0)
+  e.deliver("Char.Combat", {attacker = ""})
+  e.contents({warband}, {"Lennart"}, false, {cask, portal})
+  check("the cask completes once that boss is dead", not e.as.is_running() and completed == 1)
+end
+
+do
+  local e = engine()
+  e.begin({n = 0, e = 0}, {})
+  e.info({s = 0, n = 0})
+  e.contents({warband}, {"Lennart"}, true, {})
+  check("an ordinary room with a player still steps on", e.as.is_running() and e.sent[2] ~= "kill mutant")
+end
+
 for _, item in ipairs({cask, portal}) do
   local e = engine()
   e.begin({n = 0, e = 0}, {})

@@ -92,6 +92,21 @@ function M.cask_found(ctx)
   return has_item(ctx, { "cask of chaotic energy" })
 end
 
+-- Whether the maze's boss is among the room's monsters. Its short is always
+-- "a whirling monstrosity with ..." (mobs/chaos_boss.c:72). Completion waits
+-- for the boss only: the cask room also fills with other players' warbands and
+-- companions, which are not maze mobs and never leave, so "no monsters left"
+-- never came true there and the run walked past the cask until it exhausted.
+function M.boss_present(monsters)
+  for _, m in ipairs(monsters or {}) do
+    local name = type(m) == "table" and m.name or m
+    if tostring(name or ""):lower():find("whirling monstrosity", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 local DIFFICULTIES = { risky = true, alarming = true, deadly = true }
 
 -- Legacy's cycle, plus the difficulty word it never sent. 'setsea <level>
