@@ -400,6 +400,48 @@ do
 end
 page_opts.set("show_city_carts", true)
 
+-- ---- the Matbur (cold larder) on the City page ------------------------------
+-- Shown only while the building stands: the server stops sending larder once
+-- it is gone, so the state alone could show a demolished Matbur's last rows.
+page_opts.set("show_city_larder", true)
+S.buildings.matbur = 2
+S.larder = { tier = 2, cap = 500, used = 340, overflow = true, food = 410, hours = 156 }
+S.larder_stock = { { good = "grain", amount = 310, freshness_pct = 92, grade = "fresh" },
+                   { good = "bread", amount = 30, freshness_pct = 100 } }
+do
+  local l = city_page.lines(WIDTH)
+  local all = joined(l)
+  check("Matbur header shows used / cap", find_line(l, "Matbur  [340 / 500]") ~= nil, all)
+  check("Matbur shows how long it feeds the settlers", all:find("6.5 days", 1, true) ~= nil)
+  check("Matbur rows use the warehouse row (Grain, 92%)",
+        all:find("Grain", 1, true) ~= nil and all:find("92%", 1, true) ~= nil)
+  local width_ok = true
+  for _, row in ipairs(l) do
+    if pagelib.visible_width(row) > WIDTH then width_ok = false end
+  end
+  check("Matbur rows fit the page width", width_ok)
+  page_opts.set("show_city_larder", false)
+  check("Matbur hidden when show_city_larder is off",
+        find_line(city_page.lines(WIDTH), "Matbur  [") == nil)
+  page_opts.set("show_city_larder", true)
+  S.buildings.matbur = nil
+  check("Matbur hidden once the building is gone",
+        find_line(city_page.lines(WIDTH), "Matbur  [") == nil)
+end
+S.larder, S.larder_stock = nil, {}
+
+-- ---- a courier gift on the Trade page -----------------------------------------
+do
+  local saved = S.courier
+  S.courier = { tier = 2, runs = { { good = "grain", village = "Birka", return_in = 240,
+                                     amount = 10, cost = 0, fee = 0, gift = true, rep = 13 } } }
+  local all = joined(trade_page.lines(WIDTH))
+  check("a gift run reads 'gift ... -> town' with its rep",
+        all:find("gift 10", 1, true) ~= nil and all:find("Birka", 1, true) ~= nil
+        and all:find("+13 rep", 1, true) ~= nil, all)
+  S.courier = saved
+end
+
 -- ---- trade page: width discipline --------------------------------------------
 do
   local width_ok, widest = true, nil

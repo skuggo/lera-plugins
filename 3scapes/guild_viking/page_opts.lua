@@ -11,7 +11,7 @@ local page_opts = {}
 page_opts.defaults = {
   show_stats_xp=true, show_stats_buffs=true,
   show_city_ships=true, show_city_carts=true, show_city_market=true,
-  show_city_warehouse=true, show_city_production=true, show_city_buildings=true,
+  show_city_warehouse=true, show_city_larder=true, show_city_production=true, show_city_buildings=true,
   show_city_monuments=true, show_city_raidlog=true, auto_raid=false,
   show_city_plan=true, show_city_plan_legend=true,
   show_city_plan_icons=false,   -- graphical building/terrain icons (WIP, off by default)

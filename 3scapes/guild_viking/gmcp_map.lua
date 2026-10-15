@@ -39,6 +39,9 @@ M.COMPOSITE = {
   TQUEUE    = { "queue", "queue_legs" },
   REFINERY  = { "refinery", "refinery_grades" },
   WSTOCK    = { "wstock", "wstock_cap" },
+  -- Guild.Warehouse. The Matbur (cold larder): a flat header record plus its
+  -- rows in the wstock shape, split because a record may not nest a list.
+  LARDER    = { "larder", "larder_stock" },
   -- Guild.City. MONUMENTS was already declared composite (its cap and its name
   -- list are separate keys) and now has a writer. FARM is the same shape: MIP
   -- packed the meta into the plot list as a "meta|" pseudo-entry, GMCP gives it
@@ -241,6 +244,7 @@ local MAP = {
   queue = "TQUEUE", queue_legs = "TQUEUE",
   refinery = "REFINERY", refinery_grades = "REFINERY",
   wstock = "WSTOCK", wstock_cap = "WSTOCK",
+  larder = "LARDER", larder_stock = "LARDER",
   cidle = "CIDLE", cupg = "CUPG",
   routes = "ROUTES", blocks = "BLOCKS",
   market = "MARKET", incoming = "INCOMING", missions = "MISSIONS",

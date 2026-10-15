@@ -175,7 +175,7 @@ local THRALL_BUILDINGS = {
   "longhouse", "warehouse", "farm", "apiary", "tannery", "fishery",
   "lumber_yard", "mine", "smithy", "watchtower", "palisade", "salting_house",
   "bakehouse", "furriers_lodge", "smelter", "weaponry", "armoury", "goldsmith",
-  "skald_hall",
+  "skald_hall", "matbur",
 }
 
 local function write_thralls(rec)

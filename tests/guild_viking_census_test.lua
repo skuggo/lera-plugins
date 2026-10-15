@@ -192,9 +192,10 @@ local EXPECTED_GMCP_WRITERS = {
   -- Guild.Roster (10)
   "STAFF", "BONDS", "TRAIN", "COURIER", "SPY", "VFIND", "HIRD", "THRALLS",
   "THRALL_FOLLOWER", "VARANG",
-  -- Guild.Trade (10) and Guild.TradeGoods (1, split per lineage server-side)
+  -- Guild.Trade (10), Guild.TradeGoods (1, split per lineage server-side) and
+  -- Guild.Warehouse's Matbur (LARDER, a composite over larder/larder_stock)
   "CARTS", "TQUEUE", "CIDLE", "CUPG", "ROUTES", "BLOCKS", "REFINERY", "MARKET",
-  "INCOMING", "WSTOCK", "TGOODS",
+  "INCOMING", "WSTOCK", "TGOODS", "LARDER",
   -- Guild.City (21, including the city plan -- one composite where MIP spread
   -- it over CPLAN/CPT/CPB/CPU/CPP with a commit protocol)
   "BUILDS", "BUILDINGS", "MONUMENTS", "BLOT", "FARM", "DCYCLE", "NEXTTICK",

@@ -116,6 +116,20 @@ roster({ courier_tier = 4 })
 check("a tier-only courier delta leaves the runs standing",
       S.courier.tier == 4 and #S.courier.runs == 1)
 
+-- A 'vcourier gift' runner carries gift=1 and the rep it pays on arrival; a
+-- fetch run reads gift=false.
+roster({
+  courier_tier = 3,
+  courier = { { good = "grain", village = "Birka", secs = 300, amount = 10,
+                cost = 0, fee = 0, gift = 1, rep = 13 },
+              { good = "iron", village = "Havn", secs = 60, amount = 4,
+                cost = 90, fee = 12 } },
+})
+check("a gift run is flagged with its rep", S.courier.runs[1].gift == true
+      and S.courier.runs[1].rep == 13 and S.courier.runs[1].village == "Birka")
+check("a fetch run is not a gift", S.courier.runs[2].gift == false
+      and S.courier.runs[2].rep == 0)
+
 -- ---- spy + spy_scouts ------------------------------------------------------
 roster({
   spy = { tier = 2, mode = "watch", village = "Uppsala", secs = 90,

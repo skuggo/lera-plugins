@@ -42,7 +42,7 @@ local BLDG_NAMES = {
   tannery = "Tannery", fishery = "Fishery", farm = "Farm", apiary = "Apiary",
   longhouse = "Longhouse", garrison = "Garrison", palisade = "Palisade",
   watchtower = "Watchtower", mead_hall = "Mead Hall", thrall_pen = "Thrall Pen",
-  muster_ground = "Muster Ground", settler_plots = "Settler Plots", well = "Well",
+  muster_ground = "Muster Ground", settler_plots = "Settler Plots", well = "Well", matbur = "Matbur",
   mead_cellar = "Mead Cellar", salting_house = "Salting House", bakehouse = "Bakehouse",
   furriers_lodge = "Furrier's Lodge", mine = "Mine", smelter = "Smelter",
   weaponry = "Weaponry", armoury = "Armoury", goldsmith = "Goldsmith's Hall",
