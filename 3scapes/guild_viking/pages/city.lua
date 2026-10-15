@@ -281,6 +281,41 @@ local function warehouse_lines(add, width)
 end
 
 -- ---------------------------------------------------------------------------
+-- Matbur (cold larder), gated show_city_larder and on the building itself:
+-- the server stops sending larder/larder_stock once it is gone, so the state
+-- alone could show a demolished Matbur's last rows.
+-- ---------------------------------------------------------------------------
+
+-- "6.5 days" / "18 hours" from the server's hours of food; -1 = no settlers.
+local function larder_lasts(hours)
+  if not hours or hours < 0 then return "no settlers yet", C.dim end
+  local color = (hours < 24) and C.red or ((hours < 48) and C.yellow or C.bright_green)
+  if hours < 48 then return string.format("%d hour%s", hours, hours == 1 and "" or "s"), color end
+  return string.format("%.1f days", hours / 24), color
+end
+
+local function larder_lines(add, width)
+  local tier = S.buildings and S.buildings["matbur"] or 0
+  if tier <= 0 or not S.larder then return end
+  local h = S.larder
+  add(pagelib.header(width, string.format("Matbur  [%s / %s]",
+    pagelib.fmt_num(h.used or 0), pagelib.fmt_num(h.cap or 0))))
+  add(pagelib.kv(width, "Overflow:", h.overflow and "on" or "off",
+    h.overflow and C.bright_green or C.dim))
+  local lasts, lcolor = larder_lasts(h.hours)
+  add(pagelib.kv(width, "Feeds settlers:", lasts, lcolor))
+  if not S.larder_stock or #S.larder_stock == 0 then
+    add(pagelib.trunc(C.dim .. "Empty" .. pagelib.RESET, width))
+    return
+  end
+  local last_good = nil
+  for _, ls in ipairs(S.larder_stock) do
+    add(wstock_row(width, ls, ls.good ~= last_good))
+    last_good = ls.good
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Production (guild_viking.lua:8481-8542, gated show_city_production)
 -- ---------------------------------------------------------------------------
 
@@ -343,7 +378,7 @@ local BLDG_LABELS = {
   farm = "Farm", apiary = "Apiary", mead_cellar = "Mead Cellar", longhouse = "Longhouse",
   garrison = "Garrison", palisade = "Palisade", watchtower = "Watchtower",
   mead_hall = "Mead Hall", thrall_pen = "Thrall Pen", muster_ground = "Muster Ground",
-  settler_plots = "Settler Plots", well = "Well",
+  settler_plots = "Settler Plots", well = "Well", matbur = "Matbur",
 }
 
 local function buildings_lines(add, width)
@@ -497,6 +532,10 @@ function M.lines(width)
   -- ---- settlement-after block (guild_viking.lua:8319-9114) --------------
   if page_opts.get("show_city_warehouse") then
     warehouse_lines(add, width)
+  end
+
+  if page_opts.get("show_city_larder") then
+    larder_lines(add, width)
   end
 
   if page_opts.get("show_city_production") then

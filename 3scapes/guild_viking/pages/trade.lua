@@ -200,9 +200,18 @@ local function couriers_lines(add, width)
   for _, rn in ipairs(S.courier.runs) do
     local cd = cc.fmt_time(rn.return_in)
     local cd_color = ((rn.return_in or 0) <= 0) and C.bright_green or C.white
-    add(pagelib.trunc(string.format(">> %dx %s%-12s%s %-14s %s%s%s",
-      rn.amount or 0, cc.good_color(rn.good), cc.good_label(rn.good), pagelib.RESET,
-      rn.village or "?", cd_color, cd, pagelib.RESET), width))
+    if rn.gift then
+      -- A gift runs outbound: "gift 10 Grain -> Birka  +10 rep  4m".
+      local what = (rn.good == "daler") and (C.yellow .. "daler" .. pagelib.RESET)
+        or (cc.good_color(rn.good) .. cc.good_label(rn.good) .. pagelib.RESET)
+      add(pagelib.trunc(string.format("gift %d %s -> %s  %s+%d rep%s  %s%s%s",
+        rn.amount or 0, what, rn.village or "?", C.bright_green, rn.rep or 0, pagelib.RESET,
+        cd_color, cd, pagelib.RESET), width))
+    else
+      add(pagelib.trunc(string.format(">> %dx %s%-12s%s %-14s %s%s%s",
+        rn.amount or 0, cc.good_color(rn.good), cc.good_label(rn.good), pagelib.RESET,
+        rn.village or "?", cd_color, cd, pagelib.RESET), width))
+    end
   end
 end
 

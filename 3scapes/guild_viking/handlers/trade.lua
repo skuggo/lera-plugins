@@ -273,6 +273,10 @@ local function write_courier(parts)
           amount    = tonumber(r.amount) or 0,
           cost      = tonumber(r.cost) or 0,
           fee       = tonumber(r.fee) or 0,
+          -- A 'vcourier gift' runner: outbound to `village`, paying `rep`
+          -- on arrival rather than bringing `good` home.
+          gift      = (tonumber(r.gift) or 0) ~= 0,
+          rep       = tonumber(r.rep) or 0,
         })
       end
     end
@@ -649,6 +653,42 @@ local function write_wstock(parts)
   end
 end
 
+-- larder + larder_stock: the Matbur (cold larder), a settler-only food store.
+-- The header is flat ({tier, cap, used, overflow, food, hours}; hours -1 means
+-- no settlers to feed) and the rows have the wstock shape, so the City page
+-- draws them with the warehouse's own row code. The server leaves both keys
+-- out while no Matbur is built; the page gates on the building, so a Matbur
+-- that is demolished later never shows stale rows.
+local function write_larder(parts)
+  if type(parts) ~= "table" then return end
+  if type(parts.larder) == "table" then
+    local h = parts.larder
+    S.larder = {
+      tier     = tonumber(h.tier) or 0,
+      cap      = tonumber(h.cap) or 0,
+      used     = tonumber(h.used) or 0,
+      overflow = (tonumber(h.overflow) or 0) ~= 0,
+      food     = tonumber(h.food) or 0,
+      hours    = tonumber(h.hours) or -1,
+    }
+  end
+  if type(parts.larder_stock) == "table" then
+    S.larder_stock = {}
+    for _, r in ipairs(parts.larder_stock) do
+      if #S.larder_stock >= 50 then break end
+      if type(r) == "table" and r.good ~= nil then
+        local grade = r.grade ~= nil and tostring(r.grade) or ""
+        table.insert(S.larder_stock, {
+          good          = tostring(r.good),
+          amount        = tonumber(r.amount) or 0,
+          freshness_pct = tonumber(r.pct) or 100,
+          grade         = (grade ~= "") and grade or nil,
+        })
+      end
+    end
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Guild.City writers that live here, beside their MIP twins
 -- ---------------------------------------------------------------------------
@@ -730,6 +770,7 @@ M._gmcp = {
   MARKET   = write_market,
   INCOMING = write_incoming,
   WSTOCK   = write_wstock,
+  LARDER   = write_larder,
   RBUILD   = write_rbuild,
   UPKEEP   = write_upkeep,
   RUPKEEP  = write_rupkeep,

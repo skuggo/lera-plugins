@@ -453,6 +453,28 @@ trade_mod._market_seam.on_tgoods = nil
 
 
 -- ---- unmapped and foreign --------------------------------------------------
+-- ---- larder + larder_stock (the Matbur) -------------------------------------
+-- A flat header plus rows in the wstock shape, split by the server because a
+-- record may not nest a list; one writer joins them.
+trade({
+  larder = { tier = 2, cap = 500, used = 340, overflow = 1, food = 410, hours = 156 },
+  larder_stock = { { good = "grain", amount = 310, pct = 92, grade = "fresh" },
+                   { good = "bread", amount = 30, pct = 100, grade = "" } },
+})
+check("larder header fields", S.larder.tier == 2 and S.larder.cap == 500
+      and S.larder.used == 340 and S.larder.food == 410 and S.larder.hours == 156)
+check("larder overflow is a boolean", S.larder.overflow == true)
+check("larder_stock pct lands on freshness_pct",
+      S.larder_stock[1].freshness_pct == 92 and S.larder_stock[1].good == "grain"
+      and S.larder_stock[1].amount == 310)
+check("an empty larder grade stays nil",
+      S.larder_stock[1].grade == "fresh" and S.larder_stock[2].grade == nil)
+trade({ larder = { tier = 2, cap = 500, used = 0, overflow = 0, food = 0, hours = -1 } })
+check("a header-only larder delta leaves the rows standing and reads overflow off",
+      #S.larder_stock == 2 and S.larder.overflow == false and S.larder.hours == -1)
+trade({ larder_stock = {} })
+check("an empty larder_stock clears the rows", #S.larder_stock == 0)
+
 -- crpr (cart repairs) has no MIP key and no consumer, so it stays counted.
 local before = protocol.gmcp_stats().unknown["crpr"] or 0
 trade({ crpr = { { cart = 1, durability = 50, secs = 10 } } })
