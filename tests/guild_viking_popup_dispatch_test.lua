@@ -19,7 +19,10 @@
 -- that cwd -- see tests/popup_test.lua (run from the LERA repo root
 -- instead, hence its own "scripts/default/?.lua" prefix with no "..") for
 -- the same module loaded the other way.
-package.path = "3scapes/guild_viking/?.lua;../scripts/default/?.lua;" .. package.path
+-- popup.lua ships with Lera, so find it through LERA_ROOT like every other
+-- test; ".." only worked when this repo sat inside the Lera checkout.
+package.path = "3scapes/guild_viking/?.lua;" .. (os.getenv("LERA_ROOT") or "..")
+  .. "/scripts/default/?.lua;" .. package.path
 
 local failures = 0
 local function check(name, ok, detail)
