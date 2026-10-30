@@ -182,6 +182,7 @@ local MAP = {
   rbuild = "RBUILD", bdmg = "BDMG", upkeep = "UPKEEP", rupkeep = "RUPKEEP",
   cdtime = "CDTIME", raid = "RAID", heat = "HEAT", patrol = "PATROL",
   builds = "BUILDS", garrison = "GARRISON", buildings = "BUILDINGS",
+  court = "COURT",
   monuments_cap = "MONUMENTS", monuments_list = "MONUMENTS",
   cityplan = "CPLAN", cityplan_terrain = "CPLAN",
   cityplan_buildings = "CPLAN", cityplan_placeable = "CPLAN",

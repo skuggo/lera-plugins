@@ -69,6 +69,7 @@ local PAGE_MENUS = {
     { key = "show_city_spies",       label = "Show Spies" },
     { key = "show_city_training",    label = "Show Training" },
     { key = "show_city_heat",        label = "Show Lineage Heat" },
+    { key = "show_city_court",       label = "Show Court" },
     { action = "araid_config",       label = "Auto-Raid settings..." },
   },
   -- LEGACY [3]

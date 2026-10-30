@@ -462,7 +462,9 @@ local function buildings_lines(add, width)
     local half = math.floor(width / 2)
     local function cell(bid)
       local label = BLDG_LABELS[bid] or cc.cap_first((bid:gsub("_", " ")))
-      return string.format("%s T%d", label, S.buildings[bid] or 1)
+      local stars = (S.building_stars or {})[bid] or 0
+      return string.format("%s T%d%s", label, S.buildings[bid] or 1,
+        stars > 0 and (" " .. string.rep("★", stars)) or "")
     end
     for i = 1, #bld_ids, 2 do
       local left = pagelib.trunc(cell(bld_ids[i]), half)
@@ -564,6 +566,41 @@ local function monuments_lines(add, width)
   end
 end
 
+-- The Court: master specialists who star a building past tier 5 (server
+-- builders.h _v_court()). Locked, it names the gate still shut; open, it
+-- shows the standing offer or the work under way, else today's chance.
+-- Countdowns run down from the frame's arrival time between frames.
+local function court_lines(add, width)
+  local c = S.court
+  if not c then return end
+  add(pagelib.header(width, "Court"))
+  if not c.unlocked then
+    add(pagelib.kv(width, "Specialists:", "need " .. tostring(c.need or "a mature realm"), C.dim))
+    return
+  end
+  local passed = math.max(0, os.time() - (c.at or os.time()))
+  local function label(b)
+    return BLDG_LABELS[b] or cc.cap_first((tostring(b or "?"):gsub("_", " ")))
+  end
+  if c.work then
+    local w = c.work
+    add(pagelib.kv(width, "Work:", string.format("%s to %d-star, %s left",
+      label(w.bldg), w.to, cc.fmt_time(w.secs - passed)), C.yellow))
+  elseif c.offer then
+    local o = c.offer
+    add(pagelib.kv(width, "Visitor:", string.format("%s, a %s", tostring(o.name),
+      tostring(o.title)), C.yellow))
+    add(pagelib.kv(width, "Offers:", string.format("%s to %d-star", label(o.bldg), o.to),
+      C.yellow))
+    add(pagelib.kv(width, "Price:", string.format("%s daler, %d fraegd",
+      pagelib.fmt_num(o.daler), o.fraegd), C.yellow))
+    add(pagelib.kv(width, "Leaves in:", cc.fmt_time(o.secs - passed), C.yellow))
+  else
+    add(pagelib.kv(width, "Visit chance:", string.format("%d%% a day", c.chance), C.dim))
+  end
+  add(pagelib.kv(width, "Fraegd:", tostring(c.fraegd), C.dim))
+end
+
 function M.lines(width)
   width = width or 80
   local lines = {}
@@ -611,6 +648,10 @@ function M.lines(width)
 
   if page_opts.get("show_city_buildings") then
     buildings_lines(add, width)
+  end
+
+  if page_opts.get("show_city_court") then
+    court_lines(add, width)
   end
 
   trade_routes_lines(add, width)

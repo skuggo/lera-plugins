@@ -358,9 +358,51 @@ end
 local function write_buildings(records)
   if type(records) ~= "table" then return end
   S.buildings = {}
+  -- Stars past tier 5 (master specialists); the server sends "stars" only
+  -- for a building that has any.
+  S.building_stars = {}
   for _, r in ipairs(records) do
     if type(r) == "table" and r.id ~= nil then
       S.buildings[tostring(r.id)] = tonumber(r.tier) or 1
+      local st = tonumber(r.stars)
+      if st and st > 0 then S.building_stars[tostring(r.id)] = st end
+    end
+  end
+end
+
+-- court: the master specialists (server builders.h _v_court()). Seconds are
+-- stored with the time they arrived so the page counts down between frames.
+-- An offer with under a day left raises one reminder, keyed by visitor,
+-- building and step, so a frame every few minutes does not repeat it.
+local COURT_REMIND_SECS = 86400
+local function write_court(c)
+  if type(c) ~= "table" then return end
+  local now = os.time()
+  local court = {
+    unlocked = c.unlocked == true or tonumber(c.unlocked) == 1,
+    chance = tonumber(c.chance) or 0,
+    fraegd = tonumber(c.fraegd) or 0,
+    need = c.need,
+    at = now,
+  }
+  if type(c.offer) == "table" then
+    local o = c.offer
+    court.offer = { name = o.name, title = o.title, bldg = o.bldg,
+      to = tonumber(o.to) or 1, secs = tonumber(o.secs) or 0,
+      daler = tonumber(o.daler) or 0, fraegd = tonumber(o.fraegd) or 0 }
+  end
+  if type(c.work) == "table" then
+    local w = c.work
+    court.work = { name = w.name, bldg = w.bldg, to = tonumber(w.to) or 1,
+      secs = tonumber(w.secs) or 0 }
+  end
+  S.court = court
+  local o = court.offer
+  if o and o.secs > 0 and o.secs < COURT_REMIND_SECS then
+    local key = tostring(o.name) .. "|" .. tostring(o.bldg) .. "|" .. o.to
+    if S.court_reminded ~= key then
+      S.court_reminded = key
+      require("notify").court_reminder(o)
     end
   end
 end
@@ -708,6 +750,7 @@ M._gmcp = {
   SROLES   = write_sroles,
   BUILDS     = write_builds,
   BUILDINGS  = write_buildings,
+  COURT      = write_court,
   MONUMENTS  = write_monuments,
   BLOT       = write_blot,
   FARM       = write_farm,

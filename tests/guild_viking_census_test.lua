@@ -180,7 +180,7 @@ local EXPECTED_GMCP_WRITERS = {
   "INCOMING", "WSTOCK", "TGOODS",
   -- Guild.City (21, including the city plan -- one composite where MIP spread
   -- it over CPLAN/CPT/CPB/CPU/CPP with a commit protocol)
-  "BUILDS", "BUILDINGS", "MONUMENTS", "BLOT", "FARM", "DCYCLE", "NEXTTICK",
+  "BUILDS", "BUILDINGS", "COURT", "MONUMENTS", "BLOT", "FARM", "DCYCLE", "NEXTTICK",
   "CDTIME", "PRODUCTION", "ERRAND", "MISSIONS", "RBUILD", "UPKEEP", "RUPKEEP",
   "HEAT", "BDMG", "RAID", "PATROL", "GARRISON", "WEATHER", "CPLAN",
   -- Guild.Voyage (19, the Sea Chart included; VRELICS is a composite over

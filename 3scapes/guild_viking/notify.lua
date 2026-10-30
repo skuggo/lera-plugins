@@ -40,6 +40,7 @@ local autovoyage = optional_require("autovoyage")
 local autoherd = optional_require("autoherd")
 local autowar = optional_require("autowar")
 local autoroster = optional_require("autoroster")
+local autocourt = optional_require("autocourt")
 
 local M = {}
 
@@ -121,11 +122,26 @@ local function push_recruit_found(line)
   notify("Kaupstefna: a specialist wanderer is available to hire (vfind).")
 end
 
+-- A master specialist at court (server set.h tick_specialist_offer()): the
+-- offer waits about five days, so say so now rather than let it scroll by.
+local function push_court_specialist(line)
+  notify("Court: a master specialist offers to star a building (vbuild specialist).")
+end
+
+-- One day before a standing offer leaves (handlers/city.lua write_court()).
+function M.court_reminder(o)
+  local label = tostring(o.bldg or "a building"):gsub("_", " ")
+  notify(string.format("Court: %s leaves within a day; the %d-star %s offer ends "
+    .. "(vbuild specialist).", tostring(o.name or "the specialist"), o.to or 1, label))
+end
+
 local function push_relic_found(line)
   notify("Voyage: a rare relic was recovered!")
 end
 
 M.triggers = {
+  { name = "push_court_specialist", pattern = "to hear their price",
+    fn = push_court_specialist },
   { name = "push_cart_return",      pattern = "Cart returned from",
     fn = push_cart_return },
   { name = "push_longship_return",  pattern = "(?:The longship returned from the island|The longship docks safely and the secured voyage spoils are brought home)",
@@ -381,6 +397,7 @@ function M.countdown_tick()
   if autoherd then autoherd.tick() end
   if autowar then autowar.tick() end
   if autoroster then autoroster.tick() end
+  if autocourt then autocourt.tick() end
 end
 
 return M
