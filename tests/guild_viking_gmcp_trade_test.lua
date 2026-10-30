@@ -338,8 +338,10 @@ tradegoods({ lin = 0, goods = { { good = "t", score = -1, sup = 100,
                                   dem = 0, buy = 10, sell = 0 } } })
 check("a stream without an established lineage count leaves the grid committed",
       S.trade_goods == sentinel)
-check("a stream without an established lineage count records TGOODS once",
-      tgoods_errors() == before_errors + 1, tgoods_errors())
+-- Without a count the slice is skipped (and a full resend asked for), not
+-- recorded as a writer error: see tests/guild_viking_tgoods_reload_test.lua.
+check("a stream without an established lineage count is skipped, not an error",
+      tgoods_errors() == before_errors, tgoods_errors())
 
 local before_unknown = protocol.gmcp_stats().unknown
 local unknown_lin = before_unknown.lin or 0
@@ -647,7 +649,7 @@ do
   local errors = tgoods_errors()
   tradegoods({ lin = 0, goods = {} })
   check("reconnect cannot reuse the previous connection lineage count",
-    tgoods_errors() == errors + 1 and status().received == 0
+    tgoods_errors() == errors and status().received == 0
     and S.trade_goods == published)
 
   -- Match server paging: goods slices precede the lineage envelope, and full
