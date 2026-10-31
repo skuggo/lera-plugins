@@ -14,7 +14,7 @@ page_opts.defaults = {
   show_city_warehouse=true, show_city_production=true, show_city_buildings=true,
   show_city_monuments=true, show_city_raidlog=true, auto_raid=false,
   show_city_plan=true, show_city_plan_legend=true,
-  show_city_plan_icons=false,   -- graphical building/terrain icons (WIP, off by default)
+  show_city_plan_icons=false,   -- City Plan as pictures in GUI mode (off by default, as LEGACY)
   show_city_couriers=true, show_city_spies=true, show_city_training=true, show_city_heat=true,
   show_farm_weather=true, show_farm_plots=true, show_farm_blot=true,
   show_stock_herds=true, show_stock_queue=true, show_stock_feed=true,

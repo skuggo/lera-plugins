@@ -625,13 +625,26 @@ function M.lines(width)
   -- so the two views cannot drift apart. Gated the same as LEGACY
   -- (show_city_plan), and pre_grid_lines() inside it emits its own header and
   -- the "No data" line, so nothing extra is needed here.
+  -- With City Plan images on (GUI only), the plan is an image board, the
+  -- same hand-off pages/war.lua uses: its rows go in as lines and the board
+  -- tells tiles.render where to paint them.
+  local boards = {}
   if page_opts.get("show_city_plan") then
-    for _, l in ipairs(require("popups.cityplan").inline_lines(width)) do
-      add(l)
+    local plan = require("popups.cityplan")
+    local pre, rows, geom, post = plan.inline_board(width)
+    if pre then
+      for _, l in ipairs(pre) do add(l) end
+      boards[#boards + 1] = { geometry = geom, offset = #lines, mod = plan }
+      for _, l in ipairs(rows) do add(l) end
+      for _, l in ipairs(post) do add(l) end
+    else
+      for _, l in ipairs(plan.inline_lines(width)) do
+        add(l)
+      end
     end
   end
 
-  return lines
+  return lines, nil, boards
 end
 
 return M

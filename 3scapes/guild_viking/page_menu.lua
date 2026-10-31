@@ -25,9 +25,9 @@
 --     that plugin window's own font. lera's font is global and
 --     composition-level (gui.font_size / gui.set_font), so a plugin page menu
 --     has nothing to retune. Portal chrome, dropped like the rest of it.
---   * show_city_plan_icons remains omitted: city-plan graphics are not
---     ported here. Map, Sea and War image controls are available in GUI mode
---     through tiles.lua; TTY/headless sessions always render ASCII.
+--   * Map, Sea, War and City Plan image controls are available in GUI mode
+--     through tiles.lua; TTY/headless sessions always render ASCII and do not
+--     list them.
 --
 -- Per-item COLOUR is lost (LEGACY:11191-11196 coloured action rows 0xCCCCFF
 -- and dimmed OFF toggles to 0x888888): require("menu") rows are plain labels.
@@ -53,7 +53,7 @@ local PAGE_MENUS = {
     { key = "show_stats_xp",    label = "Show Saga XP" },
     { key = "show_stats_buffs", label = "Show Buffs" },
   },
-  -- LEGACY [2] (show_city_plan_icons omitted)
+  -- LEGACY [2]
   city = {
     { key = "show_city_ships",       label = "Show Longships" },
     { key = "show_city_carts",       label = "Show Carts" },
@@ -64,6 +64,8 @@ local PAGE_MENUS = {
     { key = "show_city_monuments",   label = "Show Monuments" },
     { key = "show_city_plan",        label = "Show City Plan" },
     { key = "show_city_plan_legend", label = "Show City Plan Legend" },
+    { key = "show_city_plan_icons",  label = "City Plan Images (off = ASCII)",
+      graphical = true },
     { key = "show_city_raidlog",     label = "Show Raid Log" },
     { key = "show_city_couriers",    label = "Show Couriers" },
     { key = "show_city_spies",       label = "Show Spies" },
@@ -295,7 +297,8 @@ function M.pick(page_key, value)
   local kind, rest = value:match("^(%a+):(.+)$")
   if kind == "key" then
     if (rest == "show_map_icons" or rest == "show_sea_chart_icons"
-        or rest == "show_war_ascii") and not require("tiles").available() then return end
+        or rest == "show_war_ascii" or rest == "show_city_plan_icons")
+        and not require("tiles").available() then return end
     if page_opts.get(rest) == nil then return end
     page_opts.set(rest, not page_opts.get(rest))
     require("persist").save()

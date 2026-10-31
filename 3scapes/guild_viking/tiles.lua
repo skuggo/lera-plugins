@@ -35,6 +35,7 @@ function M.enabled(kind)
   if not M.available() then return false end
   if kind == "map" then return opts.get("show_map_icons") end
   if kind == "sea" then return opts.get("show_sea_chart_icons") end
+  if kind == "cityplan" then return opts.get("show_city_plan_icons") end
   return not opts.get("show_war_ascii")
 end
 
@@ -176,6 +177,100 @@ function M.board(kind, rows, w, h)
 end
 
 function M.city(name) return city .. name .. ".png" end
+
+-- ---------------------------------------------------------------------------
+-- City Plan images (LEGACY guild_viking.lua 7270-7410 loaders, 10440-10555
+-- per-cell choice). The plan's own glyph vocabulary differs from the
+-- campaign board's ("#" is rock here, "W" the wall), so it gets its own
+-- tables rather than a terrains[] entry.
+-- ---------------------------------------------------------------------------
+local CITY_WANG = { w="river", W="wall", M="moat", G="gate", ["^"]="hill",
+  H="hill", f="woods", x="choke", A="mountain", t="tundra", ["+"]="road",
+  c="coast", B="bridge" }
+-- The moat ring opens into the sea: moat, bridge and coast are one channel,
+-- so each counts the others as connected (LEGACY's wconn).
+local CITY_WATER = { moat=true, bridge=true, coast=true }
+-- cp.coast: 1=N 2=E 3=S 4=W, the side the shore faces.
+local COAST_SIDE = { "n", "e", "s", "w" }
+-- Buildings with art. LEGACY's icon list minus the eight livestock and
+-- craft buildings that never got a PNG (sheepfold, henhouse, piggery, byre,
+-- stable, butchery, weaver, smokehouse): those keep their text glyph.
+local BUILDING_ART = {}
+for name in ([[farm fishery lumber_yard apiary longhouse smithy smelter
+    weaponry armoury garrison muster_ground mine tannery shadow_house
+    thrall_pen warehouse trading_post goldsmith bakehouse courier_post
+    skald_hall mead_hall mead_cellar throne_room hiring_hall dock watchtower
+    palisade moat salting_house furriers_lodge training_yard well beacon
+    settler_plots granary_mill watch_posts foundry_row workyards law_stone
+    poorhouse weaving_hall market_stalls midwife_house timberward_yard
+    fishing_wharf shipwrights_yard quarry_works herbyrgi siege_workshop
+    prison]]):gmatch("%S+") do
+  BUILDING_ART[name] = true
+end
+-- Two-by-two buildings drawn as one picture cut into quarters.
+local BIG_ART = { warehouse=true, mead_hall=true, throne_room=true }
+-- Buildings that sit inside the keep's courtyard without breaking its wall.
+M.KEEP_BUILDINGS = { throne_room=true, hiring_hall=true, herbyrgi=true, prison=true }
+
+-- Terrain for one plan cell: returns image(c, r) and ground(c, r). `ground`
+-- is always opaque (a Wang tile or plain); `image` differs only for rock,
+-- a sprite with a transparent backdrop that stands on plain ground.
+function M.city_board(rows, w, h, coast)
+  local function glyph(c, r)
+    local ch = (rows[r + 1] or ""):sub(c + 1, c + 1)
+    return ch ~= "" and ch or "."
+  end
+  local function connects(ch, t, c, r)
+    if c < 0 or c >= w or r < 0 or r >= h then return false end
+    local nc = glyph(c, r)
+    local nt = CITY_WANG[nc]
+    return nc == ch or nt == t or (CITY_WATER[t] and CITY_WATER[nt]) or false
+  end
+  local function ground(c, r)
+    local ch = glyph(c, r)
+    local t = CITY_WANG[ch]
+    if not t then return city .. "plain.png" end
+    local mask = 0
+    for _, d in ipairs(directions) do
+      if connects(ch, t, c + d[1], r + d[2]) then mask = mask + d[3] end
+    end
+    local name = t .. "_wang"
+    if t == "coast" then
+      name = "coast_wang_" .. (COAST_SIDE[coast] or "w")
+    elseif t == "bridge" then
+      -- The deck runs toward the gate, one ring inward.
+      local side = "w"
+      for _, d in ipairs({ {0, -1, "n"}, {0, 1, "s"}, {1, 0, "e"}, {-1, 0, "w"} }) do
+        if glyph(c + d[1], r + d[2]) == "G" then side = d[3]; break end
+      end
+      name = "bridge_wang_" .. side
+    end
+    return city .. name .. "_" .. bin4(mask) .. ".png"
+  end
+  local function image(c, r)
+    if glyph(c, r) == "#" then return city .. "rock.png" end
+    return ground(c, r)
+  end
+  return image, ground
+end
+
+-- The picture for one cell of a placed building, or nil when that building
+-- has no art (the caller then keeps its text glyph). ox/oy: the cell's
+-- offset inside the footprint.
+function M.city_building(b, ox, oy)
+  local bw, bh = b.w or 1, b.h or 1
+  if (bw > 1 or bh > 1) and BIG_ART[b.id] then
+    local key = (oy == 0 and ox == 0) and "tl" or (oy == 0 and ox == bw - 1) and "tr"
+      or (oy == bh - 1 and ox == 0) and "bl" or "br"
+    return city .. b.id .. "_2x2_" .. key .. ".png"
+  end
+  if BUILDING_ART[b.id] then return city .. b.id .. ".png" end
+  return nil
+end
+
+-- The keep is a hollow Wang ring: mask bits N=1 E=2 S=4 W=8 say which
+-- neighbours belong to it.
+function M.city_castle(mask) return city .. "castle_wang_" .. bin4(mask) .. ".png" end
 
 function M.draw(rect, path)
   if not path then return end

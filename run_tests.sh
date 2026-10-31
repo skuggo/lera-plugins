@@ -104,6 +104,7 @@ LERA_ROOT=$lera_root "$luajit" tests/guild_viking_page_menu_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popups_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_maplib_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_tiles_test.lua
+LERA_ROOT=$lera_root "$luajit" tests/guild_viking_cityplan_icons_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_pathfinding_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popup_map_test.lua
 LERA_ROOT=$lera_root "$luajit" tests/guild_viking_popup_sea_test.lua

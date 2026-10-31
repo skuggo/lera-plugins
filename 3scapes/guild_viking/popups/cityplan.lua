@@ -1,11 +1,10 @@
 -- City Plan popup (/vik cityplan): LEGACY guild_viking.lua's City Plan
--- section inside draw_page2's city mode (8758-9109), TEXT-VIEW branch only
--- (LEGACY's own `show_city_plan_icons=false` default -- the graphical
--- building/terrain icon and Wang-tile branch is a graphical rendering of
--- the exact same cells and is NOT ported, same ruling as popups/map.lua's
--- show_map_icons and popups/sea.lua's show_sea_chart_icons). PAL (building
--- colour classes, 8771-8781) and tile_spec (terrain glyph/colour, 8784-8793)
--- are ported verbatim below as CITYPLAN_PAL / TILE.
+-- section inside draw_page2's city mode (8758-9109). The text view is the
+-- default (LEGACY's own `show_city_plan_icons=false`); with that option on
+-- in GUI mode, the same cells draw as pictures -- LEGACY's icon and
+-- Wang-tile branch, see image_layers() below and tiles.city_board().
+-- PAL (building colour classes, 8771-8781) and tile_spec (terrain
+-- glyph/colour, 8784-8793) are ported verbatim below as CITYPLAN_PAL / TILE.
 --
 -- Data source: CPLAN/CPP/CPT%02d/CPB/CPU/CPEND (handlers/city.lua,
 -- guild_viking.lua 1850-1912), committed to S.city_plan on a complete
@@ -44,15 +43,12 @@
 -- line, exactly as those modules' own hover lines flatten LEGACY's
 -- multi-line tooltips.
 --
--- Dropped-with-reason: the castle keep's Wang-mask icon selection
--- (8865-8890, `cconn`/mask/`viking_window.castle_icons`) is icon-only
--- bookkeeping this port never reaches -- the TEXT-VIEW fallback it computes
--- alongside (border cells draw the keep wall "#", interior courtyard cells
--- draw blank, 8891-8899) is what's ported below. Multi-tile building
--- variant slicing (tl/tr/bl/br, 8905-8915) only ever picks among icon
--- assets, so it is dropped the same way. The per-frame debug diagnostic
--- line (9066-9080: framed grid size/row completeness plus "icons X/48"
--- icon-load counters) is dropped as an icon-branch/debug artifact, not
+-- The castle keep's Wang-mask selection (8865-8890) and the multi-tile
+-- tl/tr/bl/br slicing (8905-8915) live in the picture branch
+-- (image_layers); the text view keeps the keep-wall "#" ring of
+-- 8891-8899, with the courtyard showing the ground. The per-frame debug
+-- diagnostic line (9066-9080: framed grid size/row completeness plus
+-- "icons X/48" icon-load counters) is dropped as a debug artifact, not
 -- part of the four footer lines (status/perks/mood/coast) the brief scopes
 -- this module to. It once also carried `cp.dbg`'s "dropped: got N/M rows"
 -- text, so an incomplete CPEND burst could not be silently invisible; the
@@ -295,11 +291,53 @@ local function terrain_cell(cp, c, r)
   return { glyph = t.glyph, color = t.color }, ch
 end
 
+-- Picture mode (show_city_plan_icons, GUI only): LEGACY's icon branch
+-- (guild_viking.lua 10440-10555). The keep is a Wang ring whose mask counts
+-- castle cells and the keep-gated buildings inside it as connected; a
+-- building shows its art (a quarter of the picture for a 2x2 hall); bare
+-- ground is the Wang terrain. Everything stands on the terrain under it, so
+-- transparent pixels never show the renderer's clear colour. A building
+-- with no art returns nil for both, and keeps its text glyph.
+local function image_layers(cp, overlay, margin, gw, gh)
+  local tiles = require("tiles")
+  local terrain, ground = tiles.city_board(cp.rows or {}, gw, gh, cp.coast)
+  local function keep(c, r)
+    local o = overlay[r] and overlay[r][c]
+    return o and (o.id == "castle" or tiles.KEEP_BUILDINGS[o.id])
+  end
+  local function art(c, r)
+    local occ = overlay[r] and overlay[r][c]
+    if not occ then return terrain(c, r) end
+    if occ.id == "castle" then
+      local mask = (keep(c, r - 1) and 1 or 0) + (keep(c + 1, r) and 2 or 0)
+        + (keep(c, r + 1) and 4 or 0) + (keep(c - 1, r) and 8 or 0)
+      return tiles.city_castle(mask)
+    end
+    return tiles.city_building(occ, c - margin - (occ.x or 0), r - margin - (occ.y or 0))
+  end
+  local function image(c, r)
+    local path = art(c, r)
+    return path, path ~= nil
+  end
+  local function under(c, r)
+    if not art(c, r) then return nil end
+    return ground(c, r)
+  end
+  return image, under
+end
+
 local function make_grid(cp)
   local gw, gh, margin = plan_geometry(cp)
   local overlay = build_overlay(cp, margin)
+  local image, under
+  if require("tiles").enabled("cityplan") then
+    image, under = image_layers(cp, overlay, margin, gw, gh)
+  end
   return {
     w = gw, h = gh,
+    image_max_cols = 4,
+    image = image,
+    under = under,
     cell = function(c, r)
       local occ = overlay[r] and overlay[r][c]
       if occ and occ.id == "castle" then
@@ -439,12 +477,33 @@ function M.inline_lines(width)
   return out
 end
 
+-- Picture mode on the City page: the plan as an image board, in the same
+-- shape the popup draws (maplib's grid, no ruler -- the pictures replace the
+-- glyphs the ruler annotated). Returns nil whenever the text view applies:
+-- pictures off or unavailable, no plan yet, or a board too wide for the
+-- pane. Otherwise: the lines before the board, the board's own rows, its
+-- geometry for tiles.render, and the lines after it.
+function M.inline_board(width)
+  if not require("tiles").enabled("cityplan") then return nil end
+  local pre, has_grid = pre_grid_lines(width)
+  if not has_grid then return nil end
+  local cp = S.city_plan
+  local grid = make_grid(cp)
+  local geom = maplib.geometry(grid, GRID_OPTS, width)
+  if not geom or geom.width > width then return nil end
+  local post = footer_lines(width, cp)
+  if page_opts.get("show_city_plan_legend") then
+    for _, l in ipairs(maplib.legend(width, legend_entries())) do post[#post + 1] = l end
+  end
+  return pre, maplib.render(grid, GRID_OPTS, width), geom, post
+end
+
 function M.lines(width)
   local out, has_grid = pre_grid_lines(width)
   if not has_grid then return out end
 
   local cp = S.city_plan
-  for _, l in ipairs(maplib.render(make_grid(cp), GRID_OPTS)) do out[#out + 1] = l end
+  for _, l in ipairs(maplib.render(make_grid(cp), GRID_OPTS, width)) do out[#out + 1] = l end
   out[#out + 1] = hover ~= "" and pagelib.trunc(hover, width) or ""
   for _, l in ipairs(footer_lines(width, cp)) do out[#out + 1] = l end
   if page_opts.get("show_city_plan_legend") then
@@ -459,7 +518,7 @@ end
 function M.geometry(width)
   local _, has_grid = pre_grid_lines(width)
   if not has_grid then return nil end
-  return maplib.geometry(make_grid(S.city_plan), GRID_OPTS)
+  return maplib.geometry(make_grid(S.city_plan), GRID_OPTS, width)
 end
 
 function M.grid_line_offset(width)
