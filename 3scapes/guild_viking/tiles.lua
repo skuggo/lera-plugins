@@ -192,9 +192,10 @@ local CITY_WANG = { w="river", W="wall", M="moat", G="gate", ["^"]="hill",
 local CITY_WATER = { moat=true, bridge=true, coast=true }
 -- cp.coast: 1=N 2=E 3=S 4=W, the side the shore faces.
 local COAST_SIDE = { "n", "e", "s", "w" }
--- Buildings with art. LEGACY's icon list minus the eight livestock and
--- craft buildings that never got a PNG (sheepfold, henhouse, piggery, byre,
--- stable, butchery, weaver, smokehouse): those keep their text glyph.
+-- Buildings with art: every building the mudlib defines. The last ten
+-- (livestock, craft and the matbur) are drawn by
+-- images/viking_cityplan/gen_missing_buildings.py in the shipped set's style.
+-- An id not listed here keeps its text glyph.
 local BUILDING_ART = {}
 for name in ([[farm fishery lumber_yard apiary longhouse smithy smelter
     weaponry armoury garrison muster_ground mine tannery shadow_house
@@ -204,7 +205,8 @@ for name in ([[farm fishery lumber_yard apiary longhouse smithy smelter
     settler_plots granary_mill watch_posts foundry_row workyards law_stone
     poorhouse weaving_hall market_stalls midwife_house timberward_yard
     fishing_wharf shipwrights_yard quarry_works herbyrgi siege_workshop
-    prison]]):gmatch("%S+") do
+    prison sheepfold henhouse piggery byre stable butchery weaver smokehouse
+    creamery matbur]]):gmatch("%S+") do
   BUILDING_ART[name] = true
 end
 -- Two-by-two buildings drawn as one picture cut into quarters.

@@ -76,13 +76,18 @@ do
     and ends(q[4], "mead_hall_2x2_br.png"), table.concat(q, " "))
   check("a small building shows its art",
     ends(tiles.city_building({ id = "smithy" }, 0, 0), "/smithy.png"))
-  check("a building without art has none", tiles.city_building({ id = "sheepfold" }, 0, 0) == nil)
+  check("a building without art has none", tiles.city_building({ id = "mystery_hut" }, 0, 0) == nil)
+  for _, id in ipairs({ "sheepfold", "henhouse", "piggery", "byre", "stable", "butchery",
+      "weaver", "smokehouse", "creamery", "matbur" }) do
+    local path = tiles.city_building({ id = id }, 0, 0)
+    check(id .. " has art", path and ui.image_load(path) ~= nil, path)
+  end
 end
 
 -- ---- the whole board -----------------------------------------------------
 local function seed()
   -- 10x10 grid, margin 2, dim 6. A 4x4 castle at interior (0,0) with a
-  -- throne room inside it, a smithy, and a sheepfold (no art).
+  -- throne room inside it, a smithy, and a hut with no art.
   local rows = {}
   for r = 1, 10 do rows[r] = ".........." end
   rows[1] = "cccccccccc"
@@ -95,7 +100,7 @@ local function seed()
       { id = "castle", x = 0, y = 0, w = 4, h = 4, glyph = "C", pal = "T", name = "Castle" },
       { id = "throne_room", x = 1, y = 1, w = 1, h = 1, glyph = "T", pal = "T", name = "Throne" },
       { id = "smithy", x = 5, y = 0, w = 1, h = 1, glyph = "K", pal = "i", name = "Smithy" },
-      { id = "sheepfold", x = 5, y = 5, w = 1, h = 1, glyph = "s", pal = "p", name = "Sheepfold" },
+      { id = "mystery_hut", x = 5, y = 5, w = 1, h = 1, glyph = "s", pal = "p", name = "Hut" },
     },
   }
   opts.set("show_city_plan", true)
@@ -131,7 +136,7 @@ do
   check("the keep cell next to the throne still joins it", has(3, 2, "castle_wang_1110.png"))
   check("smithy shows its art", has(7, 2, "/smithy.png"))
   check("buildings stand on ground", #cell(7, 2) == 2)
-  check("sheepfold keeps its text glyph", #cell(7, 7) == 0)
+  check("a building with no art keeps its text glyph", #cell(7, 7) == 0)
   local coast = cell(0, 0)[1] or ""
   check("coast row faces north", coast:find("coast_wang_n_", 1, true) ~= nil, coast)
   for _, t in ipairs(geom.images) do tiles.draw(rect(0, 0, 1, 1), t.path) end
